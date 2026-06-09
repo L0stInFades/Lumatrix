@@ -193,6 +193,30 @@ pub fn lu_reconstructs_permuted_matrix_test() {
   assert matrix.approx_equal(pa, lu, tolerance)
 }
 
+pub fn complete_lu_reconstructs_permuted_matrix_and_solves_test() {
+  let assert Ok(a) = matrix.from_rows([[0.0, 2.0], [1.0, 3.0]])
+  let b = vector.from_list([4.0, 7.0])
+  let expected = vector.from_list([1.0, 2.0])
+
+  let assert Ok(factors) = direct.complete_lu_factor(a)
+  let assert Ok(pa) = matrix.mul(factors.p, a)
+  let assert Ok(paq) = matrix.mul(pa, factors.q)
+  let assert Ok(lu) = matrix.mul(factors.l, factors.u)
+  let assert Ok(from_factors) = direct.complete_lu_solve(factors, b)
+  let assert Ok(from_matrix) = direct.solve_complete_pivoting(a, b)
+  let assert Ok(determinant) = direct.determinant_complete_pivoting(a)
+  let assert Ok(inverse) = direct.inverse_complete_pivoting(a)
+  let assert Ok(a_inverse) = matrix.mul(a, inverse)
+  let assert Ok(identity) = matrix.identity(2)
+
+  assert factors.swaps > 0
+  assert matrix.approx_equal(paq, lu, tolerance)
+  assert vector.approx_equal(from_factors, expected, tolerance)
+  assert vector.approx_equal(from_matrix, expected, tolerance)
+  assert close_to(determinant, -2.0, 1.0e-8)
+  assert matrix.approx_equal(a_inverse, identity, 1.0e-8)
+}
+
 pub fn cholesky_factor_and_solve_spd_test() {
   let assert Ok(a) = matrix.from_rows([[4.0, 2.0], [2.0, 3.0]])
   let b = vector.from_list([6.0, 5.0])
@@ -728,6 +752,31 @@ pub fn real_schur_blocks_detect_complex_pair_test() {
   assert_rotation_complex_eigenpairs(pairs_from_matrix)
 }
 
+pub fn generalized_eigenvalue_routines_reduce_regular_pencils_test() {
+  let assert Ok(a) = matrix.from_rows([[2.0, 0.0], [0.0, 3.0]])
+  let assert Ok(b) = matrix.from_rows([[1.0, 0.0], [0.0, 2.0]])
+  let assert Ok(standard) = eigen.generalized_standard_matrix(a, b)
+  let assert Ok(values) = eigen.generalized_eigenvalues(a, b, 20, 1.0e-10)
+
+  assert matrix.approx_equal(
+    standard,
+    diagonal_matrix_from_vector(vector.from_list([2.0, 1.5])),
+    1.0e-10,
+  )
+  assert has_real_eigenvalue(values, 2.0)
+  assert has_real_eigenvalue(values, 1.5)
+
+  let assert Ok(rotation_a) = matrix.from_rows([[0.0, -2.0], [2.0, 0.0]])
+  let assert Ok(rotation_b) = matrix.from_rows([[2.0, 0.0], [0.0, 2.0]])
+  let assert Ok(rotation_values) =
+    eigen.generalized_eigenvalues(rotation_a, rotation_b, 20, 1.0e-10)
+  let assert Ok(rotation_pairs) =
+    eigen.generalized_complex_eigenpairs(rotation_a, rotation_b, 20, 1.0e-10)
+
+  assert_rotation_eigenvalues(rotation_values)
+  assert_rotation_complex_eigenpairs(rotation_pairs)
+}
+
 pub fn symmetric_tridiagonal_and_jacobi_eigen_test() {
   let assert Ok(a) =
     matrix.from_rows([[4.0, 1.0, 2.0], [1.0, 3.0, 0.0], [2.0, 0.0, 2.0]])
@@ -886,6 +935,19 @@ fn assert_rotation_eigenvalues(values: List(eigen.Eigenvalue)) -> Nil {
       assert close_to(imag_neg, -1.0, 1.0e-8)
     }
     _ -> panic as "expected conjugate complex eigenvalues"
+  }
+}
+
+fn has_real_eigenvalue(values: List(eigen.Eigenvalue), target: Float) -> Bool {
+  case values {
+    [] -> False
+    [value, ..rest] ->
+      case value {
+        eigen.RealEigenvalue(value: actual) ->
+          close_to(actual, target, 1.0e-8) || has_real_eigenvalue(rest, target)
+        eigen.ComplexEigenvalue(real: _, imaginary: _) ->
+          has_real_eigenvalue(rest, target)
+      }
   }
 }
 

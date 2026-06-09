@@ -61,6 +61,11 @@ Complex scalars and coordinate vectors live in `lumatrix/complex`. General real
 eigenvalue routines can extract complex eigenpairs from the real Schur form,
 including residual checks for `A * v = lambda * v`.
 
+Generalized eigenvalue routines cover regular problems with invertible `B` by
+reducing `A * v = lambda * B * v` to the standard matrix `B^-1 * A` using the
+complete-pivoting direct solver, then reporting residuals against the original
+pencil.
+
 ## Modules
 
 - `lumatrix/vector` and `lumatrix/matrix`: dense coordinate vectors and row-major
@@ -68,8 +73,8 @@ including residual checks for `A * v = lambda * v`.
 - `lumatrix/complex`: complex scalars and complex coordinate vectors.
 - `lumatrix/sparse`: canonical CSR sparse matrices, dense conversion,
   matrix-vector products, transposition, scaling, and infinity norm.
-- `lumatrix/direct`: Gaussian elimination, LU with partial pivoting, Cholesky,
-  triangular solves, determinant, and inverse.
+- `lumatrix/direct`: Gaussian elimination, LU with partial and complete
+  pivoting, Cholesky, triangular solves, determinant, and inverse.
 - `lumatrix/orthogonal`: Householder transformations, Givens rotations, and QR
   factorizations.
 - `lumatrix/least_squares`: Householder-QR default `solve`, normal equations,
@@ -84,7 +89,8 @@ including residual checks for `A * v = lambda * v`.
   and MINRES.
 - `lumatrix/eigen`: power methods, Hessenberg and tridiagonal reductions,
   Jacobi eigen iteration, QR iterations, Schur block helpers, symmetric
-  eigendecomposition, and complex eigenpairs from real Schur form.
+  eigendecomposition, generalized eigenvalues for invertible `B`, and complex
+  eigenpairs from real Schur form.
 
 ## Example
 

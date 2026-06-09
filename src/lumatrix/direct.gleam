@@ -13,6 +13,10 @@ pub type LU {
   LU(l: Matrix, u: Matrix, p: Matrix, swaps: Int)
 }
 
+pub type CompleteLU {
+  CompleteLU(l: Matrix, u: Matrix, p: Matrix, q: Matrix, swaps: Int)
+}
+
 pub type Cholesky {
   Cholesky(l: Matrix)
 }
@@ -68,6 +72,19 @@ pub fn lu_factor(matrix a: Matrix) -> Result(LU, NlaError) {
   }
 }
 
+pub fn complete_lu_factor(matrix a: Matrix) -> Result(CompleteLU, NlaError) {
+  case matrix.is_square(a) {
+    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
+    True -> {
+      let n = matrix.rows(a)
+      let assert Ok(l) = matrix.identity(n)
+      let assert Ok(p) = matrix.identity(n)
+      let assert Ok(q) = matrix.identity(n)
+      complete_lu_loop(0, n, a, l, p, q, 0)
+    }
+  }
+}
+
 pub fn cholesky_factor(matrix a: Matrix) -> Result(Cholesky, NlaError) {
   case matrix.is_square(a) {
     False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
@@ -86,6 +103,16 @@ pub fn cholesky_factor(matrix a: Matrix) -> Result(Cholesky, NlaError) {
 pub fn solve(a: Matrix, b: Vector) -> Result(Vector, NlaError) {
   case lu_factor(a) {
     Ok(factors) -> lu_solve(factors, b)
+    Error(e) -> Error(e)
+  }
+}
+
+pub fn solve_complete_pivoting(
+  a: Matrix,
+  b: Vector,
+) -> Result(Vector, NlaError) {
+  case complete_lu_factor(a) {
+    Ok(factors) -> complete_lu_solve(factors, b)
     Error(e) -> Error(e)
   }
 }
@@ -139,6 +166,32 @@ pub fn lu_solve(factors: LU, b: Vector) -> Result(Vector, NlaError) {
   }
 }
 
+pub fn complete_lu_solve(
+  factors: CompleteLU,
+  b: Vector,
+) -> Result(Vector, NlaError) {
+  case matrix.rows(factors.l) == vector.dimension(b) {
+    False ->
+      Error(DimensionMismatch(
+        expected: int.to_string(matrix.rows(factors.l)),
+        actual: int.to_string(vector.dimension(b)),
+      ))
+    True ->
+      case matrix.mul_vec(factors.p, b) {
+        Error(e) -> Error(e)
+        Ok(pb) ->
+          case forward_substitution(factors.l, pb) {
+            Error(e) -> Error(e)
+            Ok(y) ->
+              case back_substitution(factors.u, y) {
+                Error(e) -> Error(e)
+                Ok(permuted_x) -> matrix.mul_vec(factors.q, permuted_x)
+              }
+          }
+      }
+  }
+}
+
 pub fn forward_substitution(l: Matrix, b: Vector) -> Result(Vector, NlaError) {
   case
     matrix.rows(l) == matrix.cols(l) && matrix.rows(l) == vector.dimension(b)
@@ -185,6 +238,22 @@ pub fn determinant(a: Matrix) -> Result(Float, NlaError) {
   }
 }
 
+pub fn determinant_complete_pivoting(a: Matrix) -> Result(Float, NlaError) {
+  case complete_lu_factor(a) {
+    Error(e) -> Error(e)
+    Ok(factors) -> {
+      let product =
+        list.fold(matrix.indices(matrix.rows(factors.u)), 1.0, fn(acc, i) {
+          acc *. matrix.unsafe_get(factors.u, i, i)
+        })
+      case factors.swaps % 2 == 0 {
+        True -> Ok(product)
+        False -> Ok(0.0 -. product)
+      }
+    }
+  }
+}
+
 pub fn inverse(a: Matrix) -> Result(Matrix, NlaError) {
   case matrix.is_square(a) {
     False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
@@ -194,6 +263,17 @@ pub fn inverse(a: Matrix) -> Result(Matrix, NlaError) {
         Ok(factors) -> inverse_columns(factors, 0, matrix.rows(a), [])
       }
     }
+  }
+}
+
+pub fn inverse_complete_pivoting(a: Matrix) -> Result(Matrix, NlaError) {
+  case matrix.is_square(a) {
+    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
+    True ->
+      case complete_lu_factor(a) {
+        Error(e) -> Error(e)
+        Ok(factors) -> inverse_complete_columns(factors, 0, matrix.rows(a), [])
+      }
   }
 }
 
@@ -295,6 +375,32 @@ fn lu_loop(
   }
 }
 
+fn complete_lu_loop(
+  k: Int,
+  n: Int,
+  u: Matrix,
+  l: Matrix,
+  p: Matrix,
+  q: Matrix,
+  swaps: Int,
+) -> Result(CompleteLU, NlaError) {
+  case k >= n {
+    True -> Ok(CompleteLU(l: l, u: u, p: p, q: q, swaps: swaps))
+    False -> {
+      let #(pivot_i, pivot_j, magnitude) = complete_pivot(u, k, n)
+      case magnitude <=. pivot_tolerance {
+        True -> Error(SingularMatrix(k))
+        False -> {
+          let #(u, l, p, swaps) = swap_complete_rows(u, l, p, k, pivot_i, swaps)
+          let #(u, q, swaps) = swap_complete_cols(u, q, k, pivot_j, swaps)
+          let #(u, l) = eliminate_below(u, l, k, k + 1, n)
+          complete_lu_loop(k + 1, n, u, l, p, q, swaps)
+        }
+      }
+    }
+  }
+}
+
 fn pivot_row(u: Matrix, k: Int, n: Int) -> #(Int, Float) {
   list.fold(list.drop(matrix.indices(n), up_to: k), #(k, 0.0), fn(best, i) {
     let value = float.absolute_value(matrix.unsafe_get(u, i, k))
@@ -303,6 +409,54 @@ fn pivot_row(u: Matrix, k: Int, n: Int) -> #(Int, Float) {
       False -> best
     }
   })
+}
+
+fn complete_pivot(u: Matrix, k: Int, n: Int) -> #(Int, Int, Float) {
+  list.fold(list.drop(matrix.indices(n), up_to: k), #(k, k, 0.0), fn(best, i) {
+    list.fold(list.drop(matrix.indices(n), up_to: k), best, fn(inner_best, j) {
+      let value = float.absolute_value(matrix.unsafe_get(u, i, j))
+      case value >. inner_best.2 {
+        True -> #(i, j, value)
+        False -> inner_best
+      }
+    })
+  })
+}
+
+fn swap_complete_rows(
+  u: Matrix,
+  l: Matrix,
+  p: Matrix,
+  k: Int,
+  pivot: Int,
+  swaps: Int,
+) -> #(Matrix, Matrix, Matrix, Int) {
+  case pivot == k {
+    True -> #(u, l, p, swaps)
+    False -> {
+      let assert Ok(next_u) = matrix.swap_rows(u, k, pivot)
+      let next_l = swap_l_prefix(l, k, pivot, k)
+      let assert Ok(next_p) = matrix.swap_rows(p, k, pivot)
+      #(next_u, next_l, next_p, swaps + 1)
+    }
+  }
+}
+
+fn swap_complete_cols(
+  u: Matrix,
+  q: Matrix,
+  k: Int,
+  pivot: Int,
+  swaps: Int,
+) -> #(Matrix, Matrix, Int) {
+  case pivot == k {
+    True -> #(u, q, swaps)
+    False -> {
+      let next_u = swap_columns(u, k, pivot)
+      let next_q = swap_columns(q, k, pivot)
+      #(next_u, next_q, swaps + 1)
+    }
+  }
 }
 
 fn eliminate_below(
@@ -346,6 +500,21 @@ fn swap_l_prefix(l: Matrix, a: Int, b: Int, width: Int) -> Matrix {
               }
           }
         False -> matrix.unsafe_get(l, i, j)
+      }
+    })
+  result
+}
+
+fn swap_columns(a: Matrix, left: Int, right: Int) -> Matrix {
+  let assert Ok(result) =
+    matrix.from_fn(rows: matrix.rows(a), cols: matrix.cols(a), with: fn(i, j) {
+      case j == left {
+        True -> matrix.unsafe_get(a, i, right)
+        False ->
+          case j == right {
+            True -> matrix.unsafe_get(a, i, left)
+            False -> matrix.unsafe_get(a, i, j)
+          }
       }
     })
   result
@@ -445,6 +614,33 @@ fn inverse_columns(
           }
       }
     }
+  }
+}
+
+fn inverse_complete_columns(
+  factors: CompleteLU,
+  i: Int,
+  n: Int,
+  columns: List(Vector),
+) -> Result(Matrix, NlaError) {
+  case i >= n {
+    True -> {
+      let columns = list.reverse(columns)
+      matrix.from_fn(rows: n, cols: n, with: fn(row, col) {
+        let column = unsafe_vector_at(columns, col)
+        unsafe_vector_get(column, row)
+      })
+    }
+    False ->
+      case vector.basis(n, i) {
+        Error(e) -> Error(e)
+        Ok(e_i) ->
+          case complete_lu_solve(factors, e_i) {
+            Error(e) -> Error(e)
+            Ok(column) ->
+              inverse_complete_columns(factors, i + 1, n, [column, ..columns])
+          }
+      }
   }
 }
 

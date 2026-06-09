@@ -393,6 +393,83 @@ pub fn real_schur_eigenvalues_of(
   }
 }
 
+pub fn generalized_standard_matrix(
+  a: Matrix,
+  b: Matrix,
+) -> Result(Matrix, NlaError) {
+  case validate_square_pair(a, b) {
+    Error(e) -> Error(e)
+    Ok(_) ->
+      case direct.inverse_complete_pivoting(b) {
+        Error(e) -> Error(e)
+        Ok(b_inverse) -> matrix.mul(b_inverse, a)
+      }
+  }
+}
+
+pub fn generalized_real_schur(
+  a: Matrix,
+  b: Matrix,
+  max_iterations: Int,
+  tolerance: Float,
+) -> Result(SchurResult, NlaError) {
+  case generalized_standard_matrix(a, b) {
+    Error(e) -> Error(e)
+    Ok(standard) -> real_schur_basic(standard, max_iterations, tolerance)
+  }
+}
+
+pub fn generalized_eigenvalues(
+  a: Matrix,
+  b: Matrix,
+  max_iterations: Int,
+  tolerance: Float,
+) -> Result(List(Eigenvalue), NlaError) {
+  case generalized_real_schur(a, b, max_iterations, tolerance) {
+    Error(e) -> Error(e)
+    Ok(schur) ->
+      case schur.converged {
+        False ->
+          Error(NoConvergence(
+            iterations: schur.iterations,
+            residual: quasi_lower_off_diagonal_norm(schur.t, tolerance),
+          ))
+        True -> real_schur_eigenvalues(schur.t, tolerance)
+      }
+  }
+}
+
+pub fn generalized_complex_eigenpairs(
+  a: Matrix,
+  b: Matrix,
+  max_iterations: Int,
+  tolerance: Float,
+) -> Result(List(ComplexEigenpair), NlaError) {
+  case generalized_standard_matrix(a, b) {
+    Error(e) -> Error(e)
+    Ok(standard) ->
+      case complex_eigenpairs_of(standard, max_iterations, tolerance) {
+        Error(e) -> Error(e)
+        Ok(pairs) ->
+          list.try_map(over: pairs, with: fn(pair) {
+            case
+              generalized_complex_eigen_residual(a, b, pair.vector, pair.value)
+            {
+              Error(e) -> Error(e)
+              Ok(residual_norm) ->
+                Ok(ComplexEigenpair(
+                  value: pair.value,
+                  vector: pair.vector,
+                  residual_norm: residual_norm,
+                  iterations: pair.iterations,
+                  converged: pair.converged && residual_norm <=. tolerance,
+                ))
+            }
+          })
+      }
+  }
+}
+
 pub fn real_schur_complex_eigenpairs(
   q: Matrix,
   t: Matrix,
@@ -1568,6 +1645,30 @@ fn complex_eigen_residual(
   }
 }
 
+fn generalized_complex_eigen_residual(
+  a: Matrix,
+  b: Matrix,
+  x: complex.ComplexVector,
+  lambda: complex.Complex,
+) -> Result(Float, NlaError) {
+  case validate_square_pair(a, b) {
+    Error(e) -> Error(e)
+    Ok(_) ->
+      case real_matrix_mul_complex_vec(a, x) {
+        Error(e) -> Error(e)
+        Ok(ax) ->
+          case real_matrix_mul_complex_vec(b, x) {
+            Error(e) -> Error(e)
+            Ok(bx) ->
+              case complex.vector_axpy(complex.negate(lambda), bx, ax) {
+                Error(e) -> Error(e)
+                Ok(residual) -> complex.vector_norm2(residual)
+              }
+          }
+      }
+  }
+}
+
 fn real_matrix_mul_complex_vec(
   a: Matrix,
   x: complex.ComplexVector,
@@ -1598,6 +1699,23 @@ fn real_matrix_mul_complex_vec(
           }),
         ),
       )
+  }
+}
+
+fn validate_square_pair(a: Matrix, b: Matrix) -> Result(Nil, NlaError) {
+  case matrix.is_square(a), matrix.is_square(b) {
+    False, _ -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
+    _, False -> Error(NotSquare(matrix.rows(b), matrix.cols(b)))
+    True, True ->
+      case matrix.rows(a) == matrix.rows(b) {
+        True -> Ok(Nil)
+        False ->
+          Error(DimensionMismatch(
+            expected: "matching square dimension "
+              <> int.to_string(matrix.rows(a)),
+            actual: int.to_string(matrix.rows(b)),
+          ))
+      }
   }
 }
 
