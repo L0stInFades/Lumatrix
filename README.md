@@ -94,15 +94,9 @@ The CI workflow runs on pushes, pull requests, and manual dispatch. It downloads
 dependencies, checks formatting, runs the test suite, and builds the generated
 documentation.
 
-The release workflow publishes to Hex.pm from either a `vX.Y.Z` tag or a manual
-dispatch. The release version must match `gleam.toml`, and publishing requires a
-`HEXPM_API_KEY` secret on the repository or the protected `hexpm` environment.
-
-Before the first release, add a Hex.pm API key:
-
-```sh
-gh secret set HEXPM_API_KEY --repo L0stInFades/Lumatrix
-```
+The release workflow can run from either a `vX.Y.Z` tag or a manual dispatch. It
+validates that the release version matches `gleam.toml` and reruns the same
+checks as CI.
 
 ```sh
 git tag v1.0.0
@@ -115,7 +109,7 @@ git push origin v1.0.0
 - `test/lumatrix_test.gleam`: unit and algorithm behavior tests.
 - `gleam.toml` and `manifest.toml`: package metadata and lockfile.
 - `.github/workflows/ci.yml`: formatting, test, and docs checks.
-- `.github/workflows/release.yml`: checked Hex.pm publishing on release tags or
+- `.github/workflows/release.yml`: release-readiness checks on release tags or
   manual dispatch.
 
 ## License

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish; must match gleam.toml, without the leading v"
+        description: "Version to validate; must match gleam.toml, without the leading v"
         required: true
         type: string
 
@@ -19,10 +19,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish to Hex.pm
+  validate:
+    name: Validate release readiness
     runs-on: ubuntu-latest
-    environment: hexpm
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -71,18 +70,3 @@ jobs:
 
       - name: Build docs
         run: gleam docs build
-
-      - name: Check Hex.pm API key
-        env:
-          HEXPM_API_KEY: ${{ secrets.HEXPM_API_KEY }}
-        run: |
-          set -eu
-          if [ -z "${HEXPM_API_KEY:-}" ]; then
-            echo "::error::Set HEXPM_API_KEY as a repository or hexpm environment secret before publishing"
-            exit 1
-          fi
-
-      - name: Publish package
-        env:
-          HEXPM_API_KEY: ${{ secrets.HEXPM_API_KEY }}
-        run: gleam publish --yes

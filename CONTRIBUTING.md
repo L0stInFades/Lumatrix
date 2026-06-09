@@ -14,16 +14,10 @@ gleam test
 gleam docs build
 ```
 
-The same checks run in GitHub Actions on push and pull request. Release
-publishing is handled by `.github/workflows/release.yml`; it only publishes when
-the requested release version matches `gleam.toml` and `HEXPM_API_KEY` is
-available as a repository or `hexpm` environment secret.
-
-Before the first package release, configure the publishing secret with:
-
-```sh
-gh secret set HEXPM_API_KEY --repo L0stInFades/Lumatrix
-```
+The same checks run in GitHub Actions on push and pull request. The release
+workflow in `.github/workflows/release.yml` validates release tags and manual
+release requests by checking the package version and rerunning the project
+checks.
 
 ## Guidelines
 

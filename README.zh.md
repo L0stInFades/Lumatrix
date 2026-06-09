@@ -82,15 +82,8 @@ gleam docs build
 CI workflow 会在 push、pull request 和手动触发时运行。它会下载依赖、检查格式、
 运行测试，并构建生成文档。
 
-Release workflow 用来发布到 Hex.pm，可以通过 `vX.Y.Z` tag 触发，也可以手动触发。
-发布版本必须和 `gleam.toml` 里的版本一致；发布前需要在仓库 secret 或受保护的
-`hexpm` environment secret 中配置 `HEXPM_API_KEY`。
-
-第一次发布前，需要先添加 Hex.pm API key：
-
-```sh
-gh secret set HEXPM_API_KEY --repo L0stInFades/Lumatrix
-```
+Release workflow 可以通过 `vX.Y.Z` tag 触发，也可以手动触发。它会校验发布版本
+是否和 `gleam.toml` 一致，并重新运行 CI 同级别的检查。
 
 ```sh
 git tag v1.0.0
@@ -103,7 +96,7 @@ git push origin v1.0.0
 - `test/lumatrix_test.gleam`：单元测试和算法行为测试。
 - `gleam.toml` 和 `manifest.toml`：包元数据和锁文件。
 - `.github/workflows/ci.yml`：CI 中的格式、测试和文档检查。
-- `.github/workflows/release.yml`：通过 release tag 或手动触发发布到 Hex.pm。
+- `.github/workflows/release.yml`：通过 release tag 或手动触发做发布前检查。
 
 ## 许可证
 
