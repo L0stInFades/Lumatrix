@@ -6,22 +6,23 @@
 
 中文文档: [README.zh.md](README.zh.md)
 
-Lumatrix is a pure Gleam numerical linear algebra library for people who want
-the algorithms to stay close to the mathematics on the page, so they can be
-read, checked, and gently extended.
+Lumatrix is a pure Gleam numerical linear algebra library for applications that
+need a small, inspectable NLA surface without leaving the Gleam toolchain.
 
-It is not trying to replace BLAS or LAPACK. Its center of gravity is different:
-clear textbook-style routines, careful API boundaries, and a small surface that
-is comfortable for learning, testing, and lightweight numerical work in Gleam.
+It is not trying to replace BLAS or LAPACK for large native workloads. Its
+center of gravity is a stable, dependency-light core: explicit dense data
+structures, predictable errors, and algorithms chosen to avoid known unstable
+shortcuts where the public API depends on them.
 
 ## What It Offers
 
 - Dense vectors and row-major matrices with checked construction and opaque
   internals.
 - Direct solvers, orthogonal transformations, least-squares solvers, iterative
-  methods, Krylov methods, eigenvalue routines, and basic error analysis.
-- Small implementations that are meant to be inspected, reasoned about, and
-  improved without hiding the mathematics.
+  methods, Krylov methods, SVD utilities, eigenvalue routines, and basic error
+  analysis.
+- Stability-oriented paths for rank-deficient least squares, pseudoinverse,
+  numerical rank, and 2-norm condition estimates through `lumatrix/svd`.
 
 ## API Notes
 
@@ -45,6 +46,11 @@ for internal-style code that has already proved bounds.
 Least-squares solvers return the solution and residual norm. Condition numbers
 and normal-equation residuals live in `least_squares.stability_diagnostics`.
 
+SVD uses a one-sided Jacobi iteration instead of forming `A^T A`, so the SVD
+least-squares path avoids the condition-number squaring that comes from normal
+equations. `svd.rank`, `svd.pseudoinverse`, and `svd.condition_number` share the
+same singular-value cutoff rule.
+
 ## Modules
 
 - `lumatrix/vector` and `lumatrix/matrix`: dense coordinate vectors and row-major
@@ -54,7 +60,9 @@ and normal-equation residuals live in `least_squares.stability_diagnostics`.
 - `lumatrix/orthogonal`: Householder transformations, Givens rotations, and QR
   factorizations.
 - `lumatrix/least_squares`: Householder-QR default `solve`, normal equations,
-  Givens QR, Gram-Schmidt QR, and diagnostics.
+  Givens QR, Gram-Schmidt QR, SVD least squares, and diagnostics.
+- `lumatrix/svd`: thin SVD, pseudoinverse, numerical rank, 2-norm, 2-norm
+  condition number, and SVD-based solves.
 - `lumatrix/error_analysis`: residuals, iterative refinement, error bounds, and
   infinity-norm condition estimates.
 - `lumatrix/iterative`: Jacobi, Gauss-Seidel, SOR, steepest descent, CG, and

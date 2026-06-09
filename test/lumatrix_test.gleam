@@ -9,6 +9,7 @@ import lumatrix/krylov
 import lumatrix/least_squares
 import lumatrix/matrix
 import lumatrix/orthogonal
+import lumatrix/svd
 import lumatrix/vector
 
 const tolerance = 1.0e-8
@@ -376,6 +377,7 @@ pub fn least_squares_normal_and_qr_agree_test() {
   let assert Ok(givens) = least_squares.givens_qr(a, b)
   let assert Ok(cgs) = least_squares.classical_gram_schmidt_qr(a, b)
   let assert Ok(mgs) = least_squares.modified_gram_schmidt_qr(a, b)
+  let assert Ok(svd_solution) = least_squares.svd(a, b)
   let assert Ok(diagnostics) =
     least_squares.stability_diagnostics(a, b, qr.solution)
 
@@ -385,14 +387,83 @@ pub fn least_squares_normal_and_qr_agree_test() {
   assert vector.approx_equal(givens.solution, expected, 1.0e-8)
   assert vector.approx_equal(cgs.solution, expected, 1.0e-8)
   assert vector.approx_equal(mgs.solution, expected, 1.0e-8)
+  assert vector.approx_equal(svd_solution.solution, expected, 1.0e-8)
   assert close(normal.residual_norm, qr.residual_norm)
   assert close(normal.residual_norm, givens.residual_norm)
   assert close(normal.residual_norm, cgs.residual_norm)
   assert close(normal.residual_norm, mgs.residual_norm)
+  assert close(normal.residual_norm, svd_solution.residual_norm)
   assert close_to(diagnostics.residual_norm, qr.residual_norm, 1.0e-8)
   assert diagnostics.relative_residual >. 0.0
   assert diagnostics.normal_matrix_condition_inf >. 0.0
   assert diagnostics.normal_equation_residual_norm <=. 1.0e-8
+}
+
+pub fn svd_reconstructs_matrix_and_spectrum_test() {
+  let assert Ok(a) = matrix.from_rows([[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]])
+  let assert Ok(expected_largest) = float.square_root(3.0)
+
+  let assert Ok(result) = svd.decompose(a)
+  let sigma = diagonal_matrix_from_vector(result.singular_values)
+  let assert Ok(us) = matrix.mul(result.u, sigma)
+  let assert Ok(reconstructed) = matrix.mul(us, result.vt)
+  let assert Ok(utu) = matrix.mul(matrix.transpose(result.u), result.u)
+  let assert Ok(vvt) = matrix.mul(result.vt, matrix.transpose(result.vt))
+  let assert Ok(identity) = matrix.identity(2)
+  let assert [largest, smallest] = vector.to_list(result.singular_values)
+  let assert Ok(rank) = svd.rank(result, 1.0e-12)
+  let assert Ok(condition) = svd.condition_number(result, 1.0e-12)
+  let assert Ok(norm2) = svd.norm2(a)
+
+  assert result.converged
+  assert matrix.approx_equal(reconstructed, a, 1.0e-8)
+  assert matrix.approx_equal(utu, identity, 1.0e-8)
+  assert matrix.approx_equal(vvt, identity, 1.0e-8)
+  assert close_to(largest, expected_largest, 1.0e-8)
+  assert close_to(smallest, 1.0, 1.0e-8)
+  assert rank == 2
+  assert close_to(condition, expected_largest, 1.0e-8)
+  assert close_to(norm2, expected_largest, 1.0e-8)
+}
+
+pub fn svd_pseudoinverse_handles_rank_deficiency_test() {
+  let assert Ok(a) = matrix.from_rows([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]])
+  let b = vector.from_list([1.0, 2.0, 3.0])
+  let expected_minimum_norm = vector.from_list([0.2, 0.4])
+
+  let assert Ok(solution) = svd.solve(a, b)
+  let assert Ok(ls_solution) = least_squares.svd(a, b)
+  let assert Ok(rank) = svd.numerical_rank(a, 1.0e-10)
+  let assert Ok(a_plus) = svd.pseudoinverse(a)
+  let assert Ok(projected) = matrix.mul_vec(a_plus, b)
+
+  assert rank == 1
+  assert vector.approx_equal(solution, expected_minimum_norm, 1.0e-8)
+  assert vector.approx_equal(
+    ls_solution.solution,
+    expected_minimum_norm,
+    1.0e-8,
+  )
+  assert vector.approx_equal(projected, expected_minimum_norm, 1.0e-8)
+  assert ls_solution.residual_norm <=. 1.0e-8
+  case svd.condition_number_2(a, 1.0e-10) {
+    Error(error.InvalidInput(_)) -> Nil
+    _ -> panic as "rank-deficient SVD condition number should be rejected"
+  }
+}
+
+pub fn svd_derived_operations_reject_non_convergence_test() {
+  let assert Ok(a) = matrix.from_rows([[1.0, 1.0], [0.0, 1.0]])
+  let assert Ok(result) = svd.decompose_with(a, 0, 1.0e-16)
+
+  assert result.converged == False
+  assert result.off_diagonal_norm >. 0.0
+  case svd.pseudoinverse_from(result, 1.0e-12) {
+    Error(error.NoConvergence(iterations: 0, residual: residual)) -> {
+      assert residual >. 0.0
+    }
+    _ -> panic as "derived SVD operations should reject non-convergence"
+  }
 }
 
 pub fn rank_deficient_and_extreme_values_are_handled_test() {

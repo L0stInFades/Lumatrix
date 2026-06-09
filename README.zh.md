@@ -6,17 +6,20 @@
 
 English: [README.md](README.md)
 
-Lumatrix 是一个纯 Gleam 编写的数值线性代数库。它希望把经典算法保留在接近
-教材的形状里，让人可以读、可以检查，也可以温和地继续扩展。
+Lumatrix 是一个纯 Gleam 编写的数值线性代数库，适合需要留在 Gleam 工具链内、
+同时希望 NLA 接口小而可检查的应用。
 
-它不打算替代 BLAS 或 LAPACK。它更关心另一件事：清楚的教材式实现、稳定的 API
-边界，以及一个适合学习、测试和轻量数值计算的 Gleam 工具箱。
+它不打算在大型原生计算负载上替代 BLAS 或 LAPACK。它的重心是一个稳定、轻依赖
+的核心：显式的稠密数据结构、可预期的错误返回，以及在公共 API 依赖稳定性时避开
+已知不稳健捷径的算法路径。
 
 ## 它提供什么
 
 - 稠密坐标向量与行主序矩阵，构造时检查数据，内部结构对外隐藏。
-- 直接法、正交变换、最小二乘、迭代法、Krylov 方法、特征值算法和基础误差分析。
-- 小而清楚的实现，便于阅读、推导、验证和继续改进。
+- 直接法、正交变换、最小二乘、迭代法、Krylov 方法、SVD 工具、特征值算法和基础
+  误差分析。
+- 通过 `lumatrix/svd` 提供面向秩亏最小二乘、伪逆、数值秩和 2-范数条件数估计的
+  稳定路径。
 
 ## API 约定
 
@@ -39,13 +42,18 @@ QR 分解结果会带有 `form` 标签。Householder QR 和 Givens QR 返回 `Fu
 最小二乘求解器返回解和残差范数；条件数、正规方程残差等诊断量放在
 `least_squares.stability_diagnostics` 里。
 
+SVD 使用 one-sided Jacobi 迭代，不通过显式构造 `A^T A` 来求奇异值，因此 SVD
+最小二乘路径不会引入正规方程带来的条件数平方问题。`svd.rank`、`svd.pseudoinverse`
+和 `svd.condition_number` 使用同一套奇异值 cutoff 规则。
+
 ## 模块
 
 - `lumatrix/vector` 和 `lumatrix/matrix`：稠密坐标向量与行主序矩阵。
 - `lumatrix/direct`：高斯消元、部分选主元 LU、Cholesky、三角求解、行列式与逆矩阵。
 - `lumatrix/orthogonal`：Householder 变换、Givens 旋转和 QR 分解。
 - `lumatrix/least_squares`：默认 Householder QR 的 `solve`，以及正规方程、
-  Givens QR、Gram-Schmidt QR 和稳定性诊断。
+  Givens QR、Gram-Schmidt QR、SVD 最小二乘和稳定性诊断。
+- `lumatrix/svd`：薄 SVD、伪逆、数值秩、2-范数、2-范数条件数和基于 SVD 的求解。
 - `lumatrix/error_analysis`：残差、迭代改进、误差界和无穷范数条件数估计。
 - `lumatrix/iterative`：Jacobi、Gauss-Seidel、SOR、最速下降、共轭梯度和预条件
   共轭梯度。

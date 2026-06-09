@@ -1,5 +1,5 @@
 import gleam/io
 
 pub fn main() -> Nil {
-  io.println("lumatrix: educational numerical linear algebra for Gleam")
+  io.println("lumatrix: numerical linear algebra for Gleam")
 }
