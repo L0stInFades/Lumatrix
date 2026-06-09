@@ -1,3 +1,18 @@
+[config]
+model = "minimax/MiniMax-M3"
+fallback_models = []
+max_model_tokens = 1000000
+custom_model_max_tokens = 1000000
+model_token_count_estimate_factor = 0
+ai_timeout = 600
+temperature = 0.2
+
+[minimax]
+api_base = "https://api.minimax.io/v1"
+reasoning_split = true
+thinking = "adaptive"
+max_completion_tokens = 32768
+
 [pr_reviewer]
 extra_instructions = """
 This is Lumatrix, a pure Gleam numerical linear algebra library.
@@ -6,10 +21,17 @@ tolerance handling, convergence behavior, focused algorithm tests, and idiomatic
 Gleam that fits the existing small API style. Keep feedback concise and actionable.
 """
 require_tests_review = true
+require_security_review = true
+require_ticket_analysis_review = true
+num_max_findings = 5
 
 [pr_code_suggestions]
-num_code_suggestions = 6
+num_code_suggestions_per_chunk = 4
+max_number_of_calls = 6
+parallel_calls = true
+auto_extended_mode = true
 suggestions_score_threshold = 7
 
 [pr_description]
 publish_labels = false
+enable_large_pr_handling = true

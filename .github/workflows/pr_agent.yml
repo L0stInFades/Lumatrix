@@ -18,15 +18,23 @@ jobs:
     steps:
       - name: PR Agent action step
         id: pragent
-        uses: L0stInFades/pr-agent@gemini-high-reasoning
+        uses: L0stInFades/pr-agent@minimax-m3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GOOGLE_AI_STUDIO.GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          config.model: "gemini/gemini-3.1-pro-preview"
-          config.fallback_models: '["gemini/gemini-3.5-flash"]'
-          config.reasoning_effort: "high"
+          MINIMAX.KEY: ${{ secrets.MINIMAX_API_KEY }}
+          MINIMAX.API_BASE: "https://api.minimax.io/v1"
+          MINIMAX.REASONING_SPLIT: "true"
+          MINIMAX.THINKING: "adaptive"
+          MINIMAX.MAX_COMPLETION_TOKENS: "32768"
+          config.model: "minimax/MiniMax-M3"
+          config.fallback_models: "[]"
+          config.max_model_tokens: "1000000"
+          config.custom_model_max_tokens: "1000000"
+          config.model_token_count_estimate_factor: "0"
+          config.ai_timeout: "600"
+          config.temperature: "0.2"
           config.log_level: "INFO"
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
-          github_action_config.auto_improve: "false"
+          github_action_config.auto_improve: "true"
           github_action_config.pr_actions: '["opened", "reopened", "ready_for_review", "review_requested"]'
