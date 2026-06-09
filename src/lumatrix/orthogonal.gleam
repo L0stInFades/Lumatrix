@@ -4,8 +4,6 @@ import lumatrix/matrix.{type Matrix}
 import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
-const zero_tolerance = 1.0e-12
-
 pub type Householder {
   Householder(v: Vector, beta: Float, target_norm: Float)
 }
@@ -363,7 +361,7 @@ fn finish_gs_column(
 ) -> Result(#(List(Vector), List(#(Int, Int, Float))), NlaError) {
   case vector.norm2(v) {
     Error(e) -> Error(e)
-    Ok(rkk) if rkk <=. zero_tolerance -> Error(ZeroNorm)
+    Ok(rkk) if rkk <=. 0.0 -> Error(ZeroNorm)
     Ok(rkk) -> {
       let qk = vector.scale(v, 1.0 /. rkk)
       Ok(#(list.append(q_vectors, [qk]), [#(k, k, rkk), ..entries]))

@@ -401,6 +401,25 @@ pub fn gram_schmidt_qr_reconstructs_matrix_test() {
   assert matrix.approx_equal(modified_qtq, identity, tolerance)
 }
 
+pub fn gram_schmidt_accepts_tiny_scaled_full_rank_columns_test() {
+  let assert Ok(a) = matrix.from_rows([[1.0e-150, 0.0], [0.0, 2.0e-150]])
+
+  let assert Ok(classical) = orthogonal.classical_gram_schmidt_qr(a)
+  let assert Ok(modified) = orthogonal.modified_gram_schmidt_qr(a)
+  let assert Ok(classical_reconstructed) = matrix.mul(classical.q, classical.r)
+  let assert Ok(modified_reconstructed) = matrix.mul(modified.q, modified.r)
+  let assert Ok(classical_qtq) =
+    matrix.mul(matrix.transpose(classical.q), classical.q)
+  let assert Ok(modified_qtq) =
+    matrix.mul(matrix.transpose(modified.q), modified.q)
+  let assert Ok(identity) = matrix.identity(2)
+
+  assert matrix.approx_equal(classical_reconstructed, a, 1.0e-160)
+  assert matrix.approx_equal(modified_reconstructed, a, 1.0e-160)
+  assert matrix.approx_equal(classical_qtq, identity, tolerance)
+  assert matrix.approx_equal(modified_qtq, identity, tolerance)
+}
+
 pub fn error_analysis_residual_and_condition_test() {
   let assert Ok(a) = matrix.from_rows([[2.0, 1.0], [1.0, 3.0]])
   let x = vector.from_list([0.2, 0.6])
@@ -534,6 +553,34 @@ pub fn conjugate_gradient_family_converges_test() {
   assert vector.approx_equal(cg.solution, expected, 1.0e-8)
   assert vector.approx_equal(practical_cg.solution, expected, 1.0e-8)
   assert vector.approx_equal(identity_pcg.solution, expected, 1.0e-8)
+  assert vector.approx_equal(pcg.solution, expected, 1.0e-8)
+}
+
+pub fn conjugate_gradient_family_uses_relative_direction_checks_test() {
+  let scale = 1.0e-80
+  let assert Ok(a) =
+    matrix.from_rows([
+      [4.0 *. scale, 1.0 *. scale],
+      [1.0 *. scale, 3.0 *. scale],
+    ])
+  let b = vector.from_list([1.0 *. scale, 2.0 *. scale])
+  let assert Ok(initial) = vector.zeros(2)
+  let expected = vector.from_list([0.09090909090909091, 0.6363636363636364])
+
+  let assert Ok(sd) = iterative.steepest_descent(a, b, initial, 80, 1.0e-88)
+  let assert Ok(cg) = iterative.conjugate_gradient(a, b, initial, 10, 1.0e-88)
+  let assert Ok(practical_cg) =
+    iterative.practical_conjugate_gradient(a, b, initial, 10, 1.0e-88, 2)
+  let assert Ok(pcg) =
+    iterative.preconditioned_conjugate_gradient(a, b, initial, 10, 1.0e-88)
+
+  assert sd.converged
+  assert cg.converged
+  assert practical_cg.converged
+  assert pcg.converged
+  assert vector.approx_equal(sd.solution, expected, 1.0e-5)
+  assert vector.approx_equal(cg.solution, expected, 1.0e-8)
+  assert vector.approx_equal(practical_cg.solution, expected, 1.0e-8)
   assert vector.approx_equal(pcg.solution, expected, 1.0e-8)
 }
 
