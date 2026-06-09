@@ -320,7 +320,7 @@ fn cholesky_entry(
     }
     False -> {
       let diagonal = matrix.unsafe_get(l, j, j)
-      case singular_magnitude(float.absolute_value(diagonal), scale) {
+      case singular_magnitude(diagonal *. diagonal, scale) {
         True -> Error(SingularMatrix(j))
         False -> {
           let value = { matrix.unsafe_get(a, i, j) -. sum } /. diagonal

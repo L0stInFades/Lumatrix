@@ -287,6 +287,22 @@ pub fn cholesky_factor_and_solve_spd_test() {
   assert vector.approx_equal(x, vector.from_list([1.0, 1.0]), tolerance)
 }
 
+pub fn cholesky_accepts_large_scaled_spd_off_diagonal_test() {
+  let scale = 1.0e60
+  let assert Ok(base) = matrix.from_rows([[4.0, 2.0], [2.0, 3.0]])
+  let a = matrix.scale(base, scale)
+  let b = vector.from_list([6.0 *. scale, 5.0 *. scale])
+
+  let assert Ok(factors) = direct.cholesky_factor(a)
+  let assert Ok(reconstructed) =
+    matrix.mul(factors.l, matrix.transpose(factors.l))
+  let recovered = matrix.scale(reconstructed, 1.0 /. scale)
+  let assert Ok(x) = direct.solve_spd(a, b)
+
+  assert matrix.approx_equal(recovered, base, 1.0e-8)
+  assert vector.approx_equal(x, vector.from_list([1.0, 1.0]), 1.0e-8)
+}
+
 pub fn tiny_scale_direct_solvers_are_not_marked_singular_test() {
   let assert Ok(lu_matrix) =
     matrix.from_rows([[1.0e-150, 0.0], [0.0, 2.0e-150]])
