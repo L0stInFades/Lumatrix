@@ -1,6 +1,7 @@
 # Lumatrix
 
 [![CI](https://github.com/L0stInFades/Lumatrix/actions/workflows/ci.yml/badge.svg)](https://github.com/L0stInFades/Lumatrix/actions/workflows/ci.yml)
+[![Release](https://github.com/L0stInFades/Lumatrix/actions/workflows/release.yml/badge.svg)](https://github.com/L0stInFades/Lumatrix/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 中文文档: [README.zh.md](README.zh.md)
@@ -87,12 +88,29 @@ gleam test
 gleam docs build
 ```
 
+## CI/CD
+
+The CI workflow runs on pushes, pull requests, and manual dispatch. It downloads
+dependencies, checks formatting, runs the test suite, and builds the generated
+documentation.
+
+The release workflow publishes to Hex.pm from either a `vX.Y.Z` tag or a manual
+dispatch. The release version must match `gleam.toml`, and publishing requires a
+`HEXPM_API_KEY` secret on the repository or the protected `hexpm` environment.
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
 ## Repository Layout
 
 - `src/lumatrix/*.gleam`: library modules.
 - `test/lumatrix_test.gleam`: unit and algorithm behavior tests.
 - `gleam.toml` and `manifest.toml`: package metadata and lockfile.
 - `.github/workflows/ci.yml`: formatting, test, and docs checks.
+- `.github/workflows/release.yml`: checked Hex.pm publishing on release tags or
+  manual dispatch.
 
 ## License
 

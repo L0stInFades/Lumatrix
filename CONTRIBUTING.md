@@ -14,6 +14,11 @@ gleam test
 gleam docs build
 ```
 
+The same checks run in GitHub Actions on push and pull request. Release
+publishing is handled by `.github/workflows/release.yml`; it only publishes when
+the requested release version matches `gleam.toml` and `HEXPM_API_KEY` is
+available as a repository or `hexpm` environment secret.
+
 ## Guidelines
 
 - Keep APIs small and typed with existing `lumatrix/error` errors.

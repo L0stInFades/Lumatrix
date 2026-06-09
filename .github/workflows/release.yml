@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish; must match gleam.toml, without the leading v"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to Hex.pm
+    runs-on: ubuntu-latest
+    environment: hexpm
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Erlang and Gleam
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          gleam-version: "1.17.0"
+
+      - name: Verify release version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -eu
+
+          package_version="$(awk -F '"' '/^version =/ { print $2; exit }' gleam.toml)"
+          if [ -z "$package_version" ]; then
+            echo "::error::Could not read version from gleam.toml"
+            exit 1
+          fi
+
+          release_version="$INPUT_VERSION"
+          if [ -z "$release_version" ]; then
+            release_version="${GITHUB_REF_NAME#v}"
+          fi
+
+          if [ "$package_version" != "$release_version" ]; then
+            echo "::error::gleam.toml version $package_version does not match requested release $release_version"
+            exit 1
+          fi
+
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_NAME" != "v$package_version" ]; then
+            echo "::error::Release tags must be named v$package_version"
+            exit 1
+          fi
+
+      - name: Download dependencies
+        run: gleam deps download
+
+      - name: Check formatting
+        run: gleam format --check src test
+
+      - name: Run tests
+        run: gleam test
+
+      - name: Build docs
+        run: gleam docs build
+
+      - name: Check Hex.pm API key
+        env:
+          HEXPM_API_KEY: ${{ secrets.HEXPM_API_KEY }}
+        run: |
+          set -eu
+          if [ -z "${HEXPM_API_KEY:-}" ]; then
+            echo "::error::Set HEXPM_API_KEY as a repository or hexpm environment secret before publishing"
+            exit 1
+          fi
+
+      - name: Publish package
+        env:
+          HEXPM_API_KEY: ${{ secrets.HEXPM_API_KEY }}
+        run: gleam publish --yes

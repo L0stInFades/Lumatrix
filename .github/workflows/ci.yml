@@ -3,9 +3,18 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   gleam:
+    name: Format, test, and docs
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -16,6 +25,9 @@ jobs:
         with:
           otp-version: "27"
           gleam-version: "1.17.0"
+
+      - name: Download dependencies
+        run: gleam deps download
 
       - name: Check formatting
         run: gleam format --check src test
