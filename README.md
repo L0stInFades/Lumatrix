@@ -15,8 +15,8 @@ enough for lightweight numerical work inside Gleam applications and tools.
 
 ## What It Offers
 
-- Dense vectors and row-major matrices with checked construction and opaque
-  internals.
+- Dense vectors, row-major matrices, and canonical CSR sparse matrices with
+  checked construction and opaque internals.
 - Direct solvers, orthogonal transformations, least-squares solvers, iterative
   methods, Krylov methods, SVD utilities, eigenvalue routines, and basic error
   analysis.
@@ -52,10 +52,17 @@ least-squares path avoids the condition-number squaring that comes from normal
 equations. `svd.rank`, `svd.pseudoinverse`, and `svd.condition_number` share the
 same singular-value cutoff rule.
 
+Sparse matrices live in `lumatrix/sparse` rather than changing the dense
+`Matrix` type. They use canonical CSR storage: entries are bounds-checked,
+sorted by row and column, duplicate coordinates are summed, and stored zeros are
+dropped at construction.
+
 ## Modules
 
 - `lumatrix/vector` and `lumatrix/matrix`: dense coordinate vectors and row-major
   matrices.
+- `lumatrix/sparse`: canonical CSR sparse matrices, dense conversion,
+  matrix-vector products, transposition, scaling, and infinity norm.
 - `lumatrix/direct`: Gaussian elimination, LU with partial pivoting, Cholesky,
   triangular solves, determinant, and inverse.
 - `lumatrix/orthogonal`: Householder transformations, Givens rotations, and QR

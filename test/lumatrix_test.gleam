@@ -9,6 +9,7 @@ import lumatrix/krylov
 import lumatrix/least_squares
 import lumatrix/matrix
 import lumatrix/orthogonal
+import lumatrix/sparse
 import lumatrix/svd
 import lumatrix/vector
 
@@ -61,6 +62,93 @@ pub fn matrix_column_and_orientation_helpers_test() {
   case matrix.set_column(a, 1, vector.from_list([1.0])) {
     Error(error.DimensionMismatch(expected: "2", actual: "1")) -> Nil
     _ -> panic as "set_column should report vector length mismatch"
+  }
+}
+
+pub fn sparse_matrix_canonicalizes_and_multiplies_test() {
+  let assert Ok(a) =
+    sparse.from_entries(rows: 3, cols: 3, entries: [
+      sparse.Entry(row: 2, col: 0, value: 4.0),
+      sparse.Entry(row: 0, col: 1, value: 2.0),
+      sparse.Entry(row: 0, col: 1, value: 3.0),
+      sparse.Entry(row: 1, col: 2, value: -1.0),
+      sparse.Entry(row: 1, col: 2, value: 1.0),
+      sparse.Entry(row: 2, col: 2, value: 0.0),
+    ])
+  let x = vector.from_list([1.0, 2.0, 3.0])
+
+  let assert Ok(y) = sparse.mul_vec(a, x)
+  let assert Ok(aty) = sparse.transpose_mul_vec(a, x)
+  let assert Ok(stored) = sparse.get(a, 0, 1)
+  let assert Ok(implicit_zero) = sparse.get(a, 1, 2)
+
+  assert sparse.rows(a) == 3
+  assert sparse.cols(a) == 3
+  assert sparse.nnz(a) == 2
+  assert sparse.row_offsets(a) == [0, 1, 1, 2]
+  assert sparse.column_indices(a) == [1, 0]
+  assert sparse.values(a) == [5.0, 4.0]
+  assert matrix.to_rows(sparse.to_dense(a))
+    == [
+      [0.0, 5.0, 0.0],
+      [0.0, 0.0, 0.0],
+      [4.0, 0.0, 0.0],
+    ]
+  assert vector.approx_equal(y, vector.from_list([10.0, 0.0, 4.0]), tolerance)
+  assert vector.approx_equal(aty, vector.from_list([12.0, 5.0, 0.0]), tolerance)
+  assert close(stored, 5.0)
+  assert close(implicit_zero, 0.0)
+}
+
+pub fn sparse_matrix_dense_conversion_and_errors_test() {
+  let assert Ok(dense) =
+    matrix.from_rows([[1.0, 1.0e-14], [0.0, -2.0], [3.0, 0.0]])
+  let assert Ok(a) = sparse.from_dense(dense, drop_tolerance: 1.0e-12)
+  let assert Ok(combined_small) =
+    sparse.from_entries_with_tolerance(
+      rows: 1,
+      cols: 1,
+      entries: [
+        sparse.Entry(row: 0, col: 0, value: 0.6e-12),
+        sparse.Entry(row: 0, col: 0, value: 0.6e-12),
+      ],
+      drop_tolerance: 1.0e-12,
+    )
+  let transposed = sparse.transpose(a)
+  let scaled = sparse.scale(a, 0.5)
+
+  assert sparse.nnz(a) == 3
+  assert sparse.values(combined_small) == [1.2e-12]
+  assert matrix.to_rows(sparse.to_dense(a))
+    == [[1.0, 0.0], [0.0, -2.0], [3.0, 0.0]]
+  assert matrix.to_rows(sparse.to_dense(transposed))
+    == [
+      [1.0, 0.0, 3.0],
+      [0.0, -2.0, 0.0],
+    ]
+  assert matrix.to_rows(sparse.to_dense(scaled))
+    == [
+      [0.5, 0.0],
+      [0.0, -1.0],
+      [1.5, 0.0],
+    ]
+  assert close_to(sparse.norm_inf(a), 3.0, tolerance)
+
+  case sparse.get(a, 4, 0) {
+    Error(error.OutOfBounds(4, 0)) -> Nil
+    _ -> panic as "sparse.get should reject out-of-bounds coordinates"
+  }
+  case sparse.mul_vec(a, vector.from_list([1.0])) {
+    Error(error.DimensionMismatch(expected: "2", actual: "1")) -> Nil
+    _ -> panic as "sparse.mul_vec should reject incompatible vector length"
+  }
+  case
+    sparse.from_entries(rows: 2, cols: 2, entries: [
+      sparse.Entry(row: 0, col: 2, value: 1.0),
+    ])
+  {
+    Error(error.OutOfBounds(0, 2)) -> Nil
+    _ -> panic as "sparse.from_entries should reject invalid coordinates"
   }
 }
 
