@@ -1,82 +1,52 @@
-# Lumatrix
+<div align="center">
+
+# 🧮 Lumatrix
+
+**纯 Gleam 实现的数值稳定线性代数内核。**
 
 [![CI](https://github.com/L0stInFades/Lumatrix/actions/workflows/ci.yml/badge.svg)](https://github.com/L0stInFades/Lumatrix/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Pure Gleam](https://img.shields.io/badge/pure%20Gleam-no%20FFI-ffaff3.svg)](https://gleam.run)
+[![Targets](https://img.shields.io/badge/targets-Erlang%20%7C%20JavaScript-ffaff3.svg)](https://gleam.run)
 
-English: [README.md](README.md)
+[English](README.md) · **简体中文**
 
-Lumatrix 是一个纯 Gleam 编写的数值线性代数库。它关注小而可检查的数值内核、
-受控的数据形状、带残差语义的 API，以及尽可能稳定的默认算法。
+</div>
 
-它不打算替代 BLAS 或 LAPACK。它更像一个 Gleam 原生的数值层：容易审阅，
-容易扩展，也足够支撑 Gleam 应用和工具里的轻量数值计算。
+---
 
-## 它提供什么
+Lumatrix 是一个完全用 Gleam 写成的数值线性代数库——没有 FFI，没有 NIF，没有需要伺候的 C 代码。Gleam 能跑到哪里它就能跑到哪里，Erlang 和 JavaScript 两个目标都支持。
 
-- 稠密坐标向量、行主序矩阵和 canonical CSR 稀疏矩阵，构造时检查数据，内部结构对外
-  隐藏。
-- 直接法、正交变换、最小二乘、迭代法、Krylov 方法、SVD 工具、实/复特征值算法和
-  基础误差分析。
-- 偏稳定性的构件：带主元的直接法、Householder / Givens QR 路径、残差诊断、
-  迭代改进、会显式处理 breakdown 的 Krylov 求解器，以及 one-sided Jacobi SVD
-  形式的伪逆、数值秩和 2-范数条件数路径。
+它不打算和 BLAS / LAPACK 拼速度，也不假装能。它要做的是你 Gleam 应用里那个“诚实”的 `solve`：内核小到真的能读完，形状在构造时就被检查，默认就用稳定算法，求解器会告诉你答案到底有多准——而不是丢给你一个数，然后祝你好运。
 
-## API 约定
+## ✨ 盒子里有什么
 
-`Matrix` 和 `Vector` 的构造器是隐藏的。外部代码应通过
-`matrix.from_rows`、`matrix.from_columns`、`matrix.from_flat`、`matrix.from_fn`、
-`vector.from_list`、`vector.zeros` 或 `vector.basis` 创建值；通过
-`matrix.rows`、`matrix.cols` 和 `vector.dimension` 查看形状。
+- **构造即检查的稠密与稀疏类型** —— 坐标向量、行主序矩阵、canonical CSR 稀疏矩阵。参差不齐的行、越界下标、畸形数据在构造时就会被拒绝并返回错误；内部表示对外不可见。
+- **经典工具箱** —— 带主元的 LU 与 Cholesky 直接法、Householder / Givens / Gram-Schmidt QR、最小二乘、one-sided Jacobi SVD、实/复特征值算法、定常迭代法和 Krylov 求解器。
+- **处处可见的稳定性装备** —— 默认选主元、残差诊断、迭代改进、条件数估计、Krylov 方法显式处理 breakdown。失败是一个能被模式匹配的值，而不是一个悄悄算错的数。
 
-向量在这里是坐标数组，不区分行向量和列向量。`matrix.mul_vec(a, x)` 中的 `x`
-按 `A * x` 里的列向量理解。如果需要显式表达方向，可以使用 `matrix.row_matrix`
-或 `matrix.column_matrix`。
+## 🚀 快速开始
 
-QR 分解结果会带有 `form` 标签。Householder QR 和 Givens QR 返回 `FullQR`
-（`q` 是 m-by-m，`r` 是 m-by-n）；classical / modified Gram-Schmidt QR 返回
-`ThinQR`（`q` 是 m-by-n，`r` 是 n-by-n）。
+> [!NOTE]
+> Lumatrix 还没有发布到 Hex。可以直接从 GitHub 拉取（git 依赖需要 Gleam ≥ 1.12），或者克隆仓库后用本地 path 依赖。
 
-如果下标来自用户输入，建议使用 `matrix.get`。`matrix.unsafe_get` 更适合已经确认
-边界正确的内部式代码。
+```toml
+[dependencies]
+lumatrix = { git = "https://github.com/L0stInFades/Lumatrix.git", ref = "main" }
+# 或者克隆到本地之后：
+# lumatrix = { path = "../Lumatrix" }
+```
 
-最小二乘求解器返回解和残差范数；条件数、正规方程残差等诊断量放在
-`least_squares.stability_diagnostics` 里。
+解一个线性方程组：
 
-SVD 使用 one-sided Jacobi 迭代，不通过显式构造 `A^T A` 来求奇异值，因此 SVD
-最小二乘路径不会引入正规方程带来的条件数平方问题。`svd.rank`、`svd.pseudoinverse`
-和 `svd.condition_number` 使用同一套奇异值 cutoff 规则。
-
-稀疏矩阵放在 `lumatrix/sparse` 中，不改变稠密 `Matrix` 类型。它使用 canonical CSR
-存储：构造时会检查坐标边界、按行列排序、合并重复坐标，并丢弃需要过滤的零值。
-
-复数标量与复坐标向量放在 `lumatrix/complex` 中。一般实矩阵的特征值例程可以从
-实 Schur 形式中提取复特征对，并计算 `A * v = lambda * v` 的残差。
-
-广义特征值例程覆盖 `B` 可逆的 regular problem：先用完全主元直接法把
-`A * v = lambda * B * v` 化为标准矩阵 `B^-1 * A`，再按原始 pencil 回算残差。
-
-## 模块
-
-- `lumatrix/vector` 和 `lumatrix/matrix`：稠密坐标向量与行主序矩阵。
-- `lumatrix/complex`：复数标量与复坐标向量。
-- `lumatrix/sparse`：canonical CSR 稀疏矩阵、稠密转换、矩阵-向量乘法、转置、
-  缩放和无穷范数。
-- `lumatrix/direct`：高斯消元、部分/完全选主元 LU、Cholesky、三角求解、行列式与
-  逆矩阵。
-- `lumatrix/orthogonal`：Householder 变换、Givens 旋转和 QR 分解。
-- `lumatrix/least_squares`：默认 Householder QR 的 `solve`，以及正规方程、
-  Givens QR、Gram-Schmidt QR、SVD 最小二乘和稳定性诊断。
-- `lumatrix/svd`：薄 SVD、伪逆、数值秩、2-范数、2-范数条件数和基于 SVD 的求解。
-- `lumatrix/error_analysis`：残差、迭代改进、误差界和无穷范数条件数估计。
-- `lumatrix/iterative`：Jacobi、Gauss-Seidel、SOR、最速下降、共轭梯度和预条件
-  共轭梯度。
-- `lumatrix/krylov`：Arnoldi、Lanczos、GMRES、重启 GMRES、BiCG、BiCGSTAB 和
-  MINRES。
-- `lumatrix/eigen`：幂法、Hessenberg 与三对角化、Jacobi 特征值迭代、QR 迭代、
-  Schur 块工具、对称特征分解、`B` 可逆时的广义特征值，以及从实 Schur 形式提取
-  复特征对。
-
-## 示例
+```math
+\begin{bmatrix} 2 & 1 \\ 1 & 3 \end{bmatrix}
+\begin{bmatrix} x_1 \\ x_2 \end{bmatrix}
+=
+\begin{bmatrix} 1 \\ 2 \end{bmatrix}
+\quad\Longrightarrow\quad
+x = \begin{bmatrix} 0.2 \\ 0.6 \end{bmatrix}
+```
 
 ```gleam
 import lumatrix/direct
@@ -92,7 +62,63 @@ pub fn main() -> Nil {
 }
 ```
 
-## 开发
+最小二乘求解器会同时给出解*和*它有多不准：
+
+```gleam
+import lumatrix/least_squares
+
+let assert Ok(fit) = least_squares.solve(a, b)
+// fit.solution      —— 最小二乘解 x̂
+// fit.residual_norm —— ‖A·x̂ − b‖₂，残差小说明拟合得好
+```
+
+> [!TIP]
+> 各模块里最朴素的 `solve` 就是稳定的默认路径（`direct.solve` 是部分选主元 LU，`least_squares.solve` 是 Householder QR）。那些更花哨的变体，等你明确知道为什么需要时再用。
+
+## 🗺️ 模块地图
+
+| 模块 | 里面有什么 |
+| --- | --- |
+| 🧱 `lumatrix/vector` · `lumatrix/matrix` | 稠密坐标向量与行主序矩阵 |
+| 🚨 `lumatrix/error` | 所有可失败函数共用的 `NlaError` 错误类型 |
+| 🌀 `lumatrix/complex` | 复数标量与复坐标向量 |
+| 🕸️ `lumatrix/sparse` | canonical CSR 稀疏矩阵：稠密转换、矩阵-向量乘、转置、缩放、∞-范数 |
+| 🔨 `lumatrix/direct` | 高斯消元、部分/完全选主元 LU、Cholesky、三角求解、行列式、逆矩阵 |
+| 📐 `lumatrix/orthogonal` | Householder 变换、Givens 旋转、QR 分解 |
+| 🎯 `lumatrix/least_squares` | 默认 Householder-QR 的 `solve`，外加正规方程、Givens QR、Gram-Schmidt QR、SVD 最小二乘与稳定性诊断 |
+| 💎 `lumatrix/svd` | one-sided Jacobi 薄 SVD、伪逆、数值秩、2-范数、2-范数条件数 |
+| 🩺 `lumatrix/error_analysis` | 残差、迭代改进、误差界、∞-范数条件数估计 |
+| 🔁 `lumatrix/iterative` | Jacobi、Gauss-Seidel、SOR、最速下降、CG、预条件 CG |
+| 🚄 `lumatrix/krylov` | Arnoldi、Lanczos、GMRES（普通与重启版）、BiCG、BiCGSTAB、MINRES |
+| λ `lumatrix/eigen` | 幂法、Hessenberg/三对角化、Jacobi 与 QR 迭代、Schur 工具、对称特征分解、广义特征值、从实 Schur 形式提取复特征对 |
+
+## 📐 值得知道的约定
+
+- **构造即检查，内部不可见。** 用 `matrix.from_rows` / `from_columns` / `from_flat` / `from_fn` 和 `vector.from_list` / `zeros` / `basis` 创建值；用 `matrix.rows`、`matrix.cols`、`vector.dimension` 读形状。
+- **向量就是坐标。** 不区分行/列向量：`matrix.mul_vec(a, x)` 把 `x` 当作 `A·x` 里的列向量。需要显式方向时，用 `matrix.row_matrix` 或 `matrix.column_matrix`。
+- **QR 结果自带形状说明。** Householder 和 Givens QR 返回 `FullQR`（`q` 是 m×m，`r` 是 m×n）；classical / modified Gram-Schmidt 返回 `ThinQR`（`q` 是 m×n，`r` 是 n×n）。看 `form` 标签就行，不用猜。
+- **两种下标读取。** 不可信的下标用 `matrix.get`；边界已经证明过的内部式代码用 `matrix.unsafe_get`。
+- **求解器汇报质量。** 最小二乘结果自带残差范数；更深入的诊断量（条件数、正规方程残差）在 `least_squares.stability_diagnostics` 里。
+- **SVD 从不构造 `AᵀA`。** one-sided Jacobi 避开了正规方程带来的条件数平方问题；`svd.rank`、`svd.pseudoinverse`、`svd.condition_number` 共用同一套奇异值截断规则。
+- **稀疏是独立类型。** canonical CSR 存储：构造时检查坐标边界、按行列排序、合并重复坐标、丢弃显式零——是“构造时”，不是“以后再说”。
+- **复特征值与广义特征值都有覆盖。** 实矩阵特征值例程能从实 Schur 形式提取复特征对，并对 `A·v = λ·v` 做残差检查；`B` 可逆的广义问题先用完全选主元直接法化为 `B⁻¹·A` 上的标准问题，再按原始 pencil 回算残差。
+
+## 🔬 测试与质量
+
+两层测试盯着这些内核：
+
+- `test/` —— 各模块的单元测试与算法行为测试（gleeunit）。
+- `nla_weird_matrix_tests/` —— 一个独立的测试包：把库当作只读，从外部攻击公开 API，所用的“刁钻”矩阵 fixture 由 Python + NumPy 确定性生成。
+
+```sh
+cd nla_weird_matrix_tests
+python3 tools/generate_weird_cases.py   # 重新生成 fixture
+gleam test
+```
+
+一条铁规矩：数值例程必须暴露收敛状态和残差质量，不许把失败藏在没人检查的返回值里。
+
+## 🛠️ 开发
 
 ```sh
 gleam format --check src test
@@ -100,18 +126,24 @@ gleam test
 gleam docs build
 ```
 
-## 质量检查
+CI 跑的就是同一套。欢迎贡献——见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-本地和 CI 使用同一组核心检查：格式、测试和生成文档。数值例程应暴露收敛状态
-和残差质量，不把失败隐藏在未经检查的返回值里。
+- `src/lumatrix/*.gleam` —— 库模块
+- `test/lumatrix_test.gleam` —— 单元与算法行为测试
+- `nla_weird_matrix_tests/` —— 外部对抗性测试包
+- `gleam.toml` / `manifest.toml` —— 包元数据与锁文件
+- `.github/workflows/*.yml` —— CI
 
-## 仓库组织
+## 📄 许可证
 
-- `src/lumatrix/*.gleam`：库代码。
-- `test/lumatrix_test.gleam`：单元测试和算法行为测试。
-- `gleam.toml` 和 `manifest.toml`：包元数据和锁文件。
-- `.github/workflows/*.yml`：仓库自动化检查。
+Apache License 2.0，见 [LICENSE](LICENSE)。
 
-## 许可证
+---
 
-本项目使用 Apache License 2.0 开源，详情见 [LICENSE](LICENSE)。
+<div align="center">
+
+⎡ 纯 Gleam · 认真选主元 · 诚实的残差 ⎤
+
+(=^･ω･^=)
+
+</div>
