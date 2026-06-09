@@ -5,6 +5,7 @@ import lumatrix/error.{type NlaError, DimensionMismatch}
 import lumatrix/error_analysis
 import lumatrix/matrix.{type Matrix}
 import lumatrix/orthogonal
+import lumatrix/svd as stable_svd
 import lumatrix/vector.{type Vector}
 
 /// Core least-squares solve output.
@@ -105,6 +106,17 @@ pub fn modified_gram_schmidt_qr(
       case orthogonal.modified_gram_schmidt_qr(a) {
         Error(e) -> Error(e)
         Ok(qr) -> solve_thin_qr(a, b, qr)
+      }
+  }
+}
+
+pub fn svd(a: Matrix, b: Vector) -> Result(LeastSquaresSolution, NlaError) {
+  case validate_svd_system(a, b) {
+    Error(e) -> Error(e)
+    Ok(_) ->
+      case stable_svd.solve(a, b) {
+        Error(e) -> Error(e)
+        Ok(x) -> finish_solution(a, b, x)
       }
   }
 }
@@ -225,6 +237,21 @@ fn validate_least_squares_system(
     False ->
       Error(DimensionMismatch(
         expected: "m >= n and b length m",
+        actual: int.to_string(matrix.rows(a))
+          <> "x"
+          <> int.to_string(matrix.cols(a))
+          <> ", b="
+          <> int.to_string(vector.dimension(b)),
+      ))
+  }
+}
+
+fn validate_svd_system(a: Matrix, b: Vector) -> Result(Nil, NlaError) {
+  case matrix.rows(a) == vector.dimension(b) {
+    True -> Ok(Nil)
+    False ->
+      Error(DimensionMismatch(
+        expected: "b length m",
         actual: int.to_string(matrix.rows(a))
           <> "x"
           <> int.to_string(matrix.cols(a))

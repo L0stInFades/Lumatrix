@@ -18,10 +18,12 @@ enough for lightweight numerical work inside Gleam applications and tools.
 - Dense vectors and row-major matrices with checked construction and opaque
   internals.
 - Direct solvers, orthogonal transformations, least-squares solvers, iterative
-  methods, Krylov methods, eigenvalue routines, and basic error analysis.
+  methods, Krylov methods, SVD utilities, eigenvalue routines, and basic error
+  analysis.
 - Stability-oriented building blocks: pivoted direct solvers, Householder and
-  Givens QR paths, residual diagnostics, refinement tools, and Krylov solvers
-  with explicit breakdown handling.
+  Givens QR paths, residual diagnostics, refinement tools, Krylov solvers with
+  explicit breakdown handling, and one-sided Jacobi SVD paths for pseudoinverse,
+  numerical rank, and 2-norm condition estimates.
 
 ## API Notes
 
@@ -45,6 +47,11 @@ for internal-style code that has already proved bounds.
 Least-squares solvers return the solution and residual norm. Condition numbers
 and normal-equation residuals live in `least_squares.stability_diagnostics`.
 
+SVD uses a one-sided Jacobi iteration instead of forming `A^T A`, so the SVD
+least-squares path avoids the condition-number squaring that comes from normal
+equations. `svd.rank`, `svd.pseudoinverse`, and `svd.condition_number` share the
+same singular-value cutoff rule.
+
 ## Modules
 
 - `lumatrix/vector` and `lumatrix/matrix`: dense coordinate vectors and row-major
@@ -54,7 +61,9 @@ and normal-equation residuals live in `least_squares.stability_diagnostics`.
 - `lumatrix/orthogonal`: Householder transformations, Givens rotations, and QR
   factorizations.
 - `lumatrix/least_squares`: Householder-QR default `solve`, normal equations,
-  Givens QR, Gram-Schmidt QR, and diagnostics.
+  Givens QR, Gram-Schmidt QR, SVD least squares, and diagnostics.
+- `lumatrix/svd`: thin SVD, pseudoinverse, numerical rank, 2-norm, 2-norm
+  condition number, and SVD-based solves.
 - `lumatrix/error_analysis`: residuals, iterative refinement, error bounds, and
   infinity-norm condition estimates.
 - `lumatrix/iterative`: Jacobi, Gauss-Seidel, SOR, steepest descent, CG, and
