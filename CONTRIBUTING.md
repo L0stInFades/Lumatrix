@@ -19,6 +19,12 @@ publishing is handled by `.github/workflows/release.yml`; it only publishes when
 the requested release version matches `gleam.toml` and `HEXPM_API_KEY` is
 available as a repository or `hexpm` environment secret.
 
+Before the first package release, configure the publishing secret with:
+
+```sh
+gh secret set HEXPM_API_KEY --repo L0stInFades/Lumatrix
+```
+
 ## Guidelines
 
 - Keep APIs small and typed with existing `lumatrix/error` errors.

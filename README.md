@@ -98,6 +98,12 @@ The release workflow publishes to Hex.pm from either a `vX.Y.Z` tag or a manual
 dispatch. The release version must match `gleam.toml`, and publishing requires a
 `HEXPM_API_KEY` secret on the repository or the protected `hexpm` environment.
 
+Before the first release, add a Hex.pm API key:
+
+```sh
+gh secret set HEXPM_API_KEY --repo L0stInFades/Lumatrix
+```
+
 ```sh
 git tag v1.0.0
 git push origin v1.0.0
