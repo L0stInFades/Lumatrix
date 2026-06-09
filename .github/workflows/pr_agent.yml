@@ -25,7 +25,8 @@ jobs:
           config.model: "gemini/gemini-3.1-pro-preview"
           config.fallback_models: '["gemini/gemini-3.5-flash"]'
           config.reasoning_effort: "high"
+          config.log_level: "INFO"
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
-          github_action_config.auto_improve: "true"
+          github_action_config.auto_improve: "false"
           github_action_config.pr_actions: '["opened", "reopened", "ready_for_review", "review_requested"]'
