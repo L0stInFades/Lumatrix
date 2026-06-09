@@ -5,9 +5,10 @@ import lumatrix/error.{
   type NlaError, DimensionMismatch, InvalidInput, NotSquare, SingularMatrix,
 }
 import lumatrix/matrix.{type Matrix}
+import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
-const pivot_tolerance = 1.0e-12
+const pivot_tolerance = 1.0e-14
 
 pub type LU {
   LU(l: Matrix, u: Matrix, p: Matrix, swaps: Int)
@@ -36,7 +37,7 @@ pub fn gauss_transform(
     False -> Error(InvalidInput("invalid Gauss transform indices"))
     True -> {
       let pivot = matrix.unsafe_get(a, k, k)
-      case float.absolute_value(pivot) <=. pivot_tolerance {
+      case singular_magnitude(float.absolute_value(pivot), matrix.norm_inf(a)) {
         True -> Error(SingularMatrix(k))
         False -> {
           let factor = 0.0 -. matrix.unsafe_get(a, i, k) /. pivot
@@ -67,7 +68,7 @@ pub fn lu_factor(matrix a: Matrix) -> Result(LU, NlaError) {
       let n = matrix.rows(a)
       let assert Ok(l) = matrix.identity(n)
       let assert Ok(p) = matrix.identity(n)
-      lu_loop(0, n, a, l, p, 0)
+      lu_loop(0, n, a, l, p, 0, matrix.norm_inf(a))
     }
   }
 }
@@ -80,7 +81,7 @@ pub fn complete_lu_factor(matrix a: Matrix) -> Result(CompleteLU, NlaError) {
       let assert Ok(l) = matrix.identity(n)
       let assert Ok(p) = matrix.identity(n)
       let assert Ok(q) = matrix.identity(n)
-      complete_lu_loop(0, n, a, l, p, q, 0)
+      complete_lu_loop(0, n, a, l, p, q, 0, matrix.norm_inf(a))
     }
   }
 }
@@ -94,7 +95,7 @@ pub fn cholesky_factor(matrix a: Matrix) -> Result(Cholesky, NlaError) {
         True -> {
           let assert Ok(l) =
             matrix.zeros(rows: matrix.rows(a), cols: matrix.cols(a))
-          cholesky_loop(a, l, 0, 0)
+          cholesky_loop(a, l, 0, 0, matrix.norm_inf(a))
         }
       }
   }
@@ -203,7 +204,7 @@ pub fn forward_substitution(l: Matrix, b: Vector) -> Result(Vector, NlaError) {
           <> int.to_string(matrix.cols(l)),
         actual: int.to_string(vector.dimension(b)),
       ))
-    True -> forward_loop(l, b, 0, [])
+    True -> forward_loop(l, b, 0, [], matrix.norm_inf(l))
   }
 }
 
@@ -218,7 +219,7 @@ pub fn back_substitution(u: Matrix, b: Vector) -> Result(Vector, NlaError) {
           <> int.to_string(matrix.cols(u)),
         actual: int.to_string(vector.dimension(b)),
       ))
-    True -> back_loop(u, b, matrix.rows(u) - 1, [])
+    True -> back_loop(u, b, matrix.rows(u) - 1, [], matrix.norm_inf(u))
   }
 }
 
@@ -282,13 +283,14 @@ fn cholesky_loop(
   l: Matrix,
   i: Int,
   j: Int,
+  scale: Float,
 ) -> Result(Cholesky, NlaError) {
   case i >= matrix.rows(a) {
     True -> Ok(Cholesky(l: l))
     False ->
       case j > i {
-        True -> cholesky_loop(a, l, i + 1, 0)
-        False -> cholesky_entry(a, l, i, j)
+        True -> cholesky_loop(a, l, i + 1, 0, scale)
+        False -> cholesky_entry(a, l, i, j, scale)
       }
   }
 }
@@ -298,49 +300,42 @@ fn cholesky_entry(
   l: Matrix,
   i: Int,
   j: Int,
+  scale: Float,
 ) -> Result(Cholesky, NlaError) {
   let sum = cholesky_dot(l, i, j, 0, 0.0)
   case i == j {
     True -> {
       let value = matrix.unsafe_get(a, i, i) -. sum
-      case value <=. pivot_tolerance {
+      case value <=. 0.0 || singular_magnitude(value, scale) {
         True -> Error(SingularMatrix(i))
         False ->
           case float.square_root(value) {
             Error(_) -> Error(SingularMatrix(i))
             Ok(root) -> {
               let assert Ok(next_l) = matrix.set(l, i, j, root)
-              cholesky_loop(a, next_l, i, j + 1)
+              cholesky_loop(a, next_l, i, j + 1, scale)
             }
           }
       }
     }
     False -> {
       let diagonal = matrix.unsafe_get(l, j, j)
-      case float.absolute_value(diagonal) <=. pivot_tolerance {
+      case singular_magnitude(float.absolute_value(diagonal), scale) {
         True -> Error(SingularMatrix(j))
         False -> {
           let value = { matrix.unsafe_get(a, i, j) -. sum } /. diagonal
           let assert Ok(next_l) = matrix.set(l, i, j, value)
-          cholesky_loop(a, next_l, i, j + 1)
+          cholesky_loop(a, next_l, i, j + 1, scale)
         }
       }
     }
   }
 }
 
-fn cholesky_dot(l: Matrix, i: Int, j: Int, k: Int, sum: Float) -> Float {
-  case k >= j {
-    True -> sum
-    False ->
-      cholesky_dot(
-        l,
-        i,
-        j,
-        k + 1,
-        sum +. matrix.unsafe_get(l, i, k) *. matrix.unsafe_get(l, j, k),
-      )
-  }
+fn cholesky_dot(l: Matrix, i: Int, j: Int, _k: Int, _sum: Float) -> Float {
+  numerics.compensated_sum_map(matrix.indices(j), fn(k) {
+    matrix.unsafe_get(l, i, k) *. matrix.unsafe_get(l, j, k)
+  })
 }
 
 fn lu_loop(
@@ -350,12 +345,13 @@ fn lu_loop(
   l: Matrix,
   p: Matrix,
   swaps: Int,
+  scale: Float,
 ) -> Result(LU, NlaError) {
   case k >= n {
     True -> Ok(LU(l: l, u: u, p: p, swaps: swaps))
     False -> {
       let #(pivot, magnitude) = pivot_row(u, k, n)
-      case magnitude <=. pivot_tolerance {
+      case singular_magnitude(magnitude, scale) {
         True -> Error(SingularMatrix(k))
         False -> {
           let #(u, l, p, swaps) = case pivot == k {
@@ -368,7 +364,7 @@ fn lu_loop(
             }
           }
           let #(u, l) = eliminate_below(u, l, k, k + 1, n)
-          lu_loop(k + 1, n, u, l, p, swaps)
+          lu_loop(k + 1, n, u, l, p, swaps, scale)
         }
       }
     }
@@ -383,18 +379,19 @@ fn complete_lu_loop(
   p: Matrix,
   q: Matrix,
   swaps: Int,
+  scale: Float,
 ) -> Result(CompleteLU, NlaError) {
   case k >= n {
     True -> Ok(CompleteLU(l: l, u: u, p: p, q: q, swaps: swaps))
     False -> {
       let #(pivot_i, pivot_j, magnitude) = complete_pivot(u, k, n)
-      case magnitude <=. pivot_tolerance {
+      case singular_magnitude(magnitude, scale) {
         True -> Error(SingularMatrix(k))
         False -> {
           let #(u, l, p, swaps) = swap_complete_rows(u, l, p, k, pivot_i, swaps)
           let #(u, q, swaps) = swap_complete_cols(u, q, k, pivot_j, swaps)
           let #(u, l) = eliminate_below(u, l, k, k + 1, n)
-          complete_lu_loop(k + 1, n, u, l, p, q, swaps)
+          complete_lu_loop(k + 1, n, u, l, p, q, swaps, scale)
         }
       }
     }
@@ -523,10 +520,11 @@ fn swap_columns(a: Matrix, left: Int, right: Int) -> Matrix {
 fn is_symmetric(a: Matrix, tolerance: Float) -> Bool {
   list.all(matrix.indices(matrix.rows(a)), satisfying: fn(i) {
     list.all(matrix.indices(i), satisfying: fn(j) {
-      float.absolute_value(
-        matrix.unsafe_get(a, i, j) -. matrix.unsafe_get(a, j, i),
+      numerics.relative_close(
+        matrix.unsafe_get(a, i, j),
+        matrix.unsafe_get(a, j, i),
+        tolerance,
       )
-      <=. tolerance
     })
   })
 }
@@ -536,21 +534,22 @@ fn forward_loop(
   b: Vector,
   i: Int,
   solved: List(Float),
+  scale: Float,
 ) -> Result(Vector, NlaError) {
   case i >= matrix.rows(l) {
     True -> Ok(vector.from_list(solved))
     False -> {
       let diagonal = matrix.unsafe_get(l, i, i)
-      case float.absolute_value(diagonal) <=. pivot_tolerance {
+      case singular_magnitude(float.absolute_value(diagonal), scale) {
         True -> Error(SingularMatrix(i))
         False -> {
           let rhs = unsafe_vector_get(b, i)
           let lower_sum =
-            list.fold(matrix.indices(i), 0.0, fn(acc, j) {
-              acc +. matrix.unsafe_get(l, i, j) *. unsafe_at(solved, j)
+            numerics.compensated_sum_map(matrix.indices(i), fn(j) {
+              matrix.unsafe_get(l, i, j) *. unsafe_at(solved, j)
             })
           let x = { rhs -. lower_sum } /. diagonal
-          forward_loop(l, b, i + 1, list.append(solved, [x]))
+          forward_loop(l, b, i + 1, list.append(solved, [x]), scale)
         }
       }
     }
@@ -562,27 +561,25 @@ fn back_loop(
   b: Vector,
   i: Int,
   solved_tail: List(Float),
+  scale: Float,
 ) -> Result(Vector, NlaError) {
   case i < 0 {
     True -> Ok(vector.from_list(solved_tail))
     False -> {
       let diagonal = matrix.unsafe_get(u, i, i)
-      case float.absolute_value(diagonal) <=. pivot_tolerance {
+      case singular_magnitude(float.absolute_value(diagonal), scale) {
         True -> Error(SingularMatrix(i))
         False -> {
           let rhs = unsafe_vector_get(b, i)
           let upper_sum =
-            list.fold(
+            numerics.compensated_sum_map(
               list.drop(matrix.indices(matrix.rows(u)), up_to: i + 1),
-              0.0,
-              fn(acc, j) {
-                acc
-                +. matrix.unsafe_get(u, i, j)
-                *. unsafe_at(solved_tail, j - i - 1)
+              fn(j) {
+                matrix.unsafe_get(u, i, j) *. unsafe_at(solved_tail, j - i - 1)
               },
             )
           let x = { rhs -. upper_sum } /. diagonal
-          back_loop(u, b, i - 1, [x, ..solved_tail])
+          back_loop(u, b, i - 1, [x, ..solved_tail], scale)
         }
       }
     }
@@ -647,6 +644,10 @@ fn inverse_complete_columns(
 fn unsafe_vector_get(values: Vector, index: Int) -> Float {
   let assert Ok(value) = vector.get(values, index)
   value
+}
+
+fn singular_magnitude(magnitude: Float, scale: Float) -> Bool {
+  numerics.relative_near_zero(magnitude, scale, pivot_tolerance)
 }
 
 fn unsafe_vector_at(vectors: List(Vector), index: Int) -> Vector {

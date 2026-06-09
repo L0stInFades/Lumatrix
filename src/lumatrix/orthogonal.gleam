@@ -1,7 +1,7 @@
-import gleam/float
 import gleam/list
 import lumatrix/error.{type NlaError, DimensionMismatch, InvalidInput, ZeroNorm}
 import lumatrix/matrix.{type Matrix}
+import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
 const zero_tolerance = 1.0e-12
@@ -33,27 +33,8 @@ pub type QR {
 pub fn householder(vector x: Vector) -> Result(Householder, NlaError) {
   case vector.norm2(x) {
     Error(e) -> Error(e)
-    Ok(a) if a <=. zero_tolerance -> Error(ZeroNorm)
-    Ok(a) -> {
-      case vector.basis(vector.dimension(x), 0) {
-        Error(e) -> Error(e)
-        Ok(e1) -> {
-          let target = vector.scale(e1, a)
-          case vector.sub(x, target) {
-            Error(e) -> Error(e)
-            Ok(v) -> {
-              case vector.dot(v, v) {
-                Error(e) -> Error(e)
-                Ok(denom) if denom <=. zero_tolerance ->
-                  Ok(Householder(v: e1, beta: 0.0, target_norm: a))
-                Ok(denom) ->
-                  Ok(Householder(v: v, beta: 2.0 /. denom, target_norm: a))
-              }
-            }
-          }
-        }
-      }
-    }
+    Ok(a) if a <=. 0.0 -> Error(ZeroNorm)
+    Ok(a) -> householder_from_values(vector.to_list(x), a)
   }
 }
 
@@ -87,9 +68,9 @@ pub fn apply_householder(
 }
 
 pub fn givens(a: Float, b: Float) -> Result(Givens, NlaError) {
-  case float.square_root(a *. a +. b *. b) {
+  case numerics.hypot(a, b) {
     Error(_) -> Error(InvalidInput("cannot compute Givens radius"))
-    Ok(r) if r <=. zero_tolerance -> Ok(Givens(c: 1.0, s: 0.0, r: 0.0))
+    Ok(r) if r <=. 0.0 -> Ok(Givens(c: 1.0, s: 0.0, r: 0.0))
     Ok(r) -> Ok(Givens(c: a /. r, s: b /. r, r: r))
   }
 }
@@ -493,6 +474,49 @@ fn embed_householder(size: Int, offset: Int, small: Matrix) -> Matrix {
       }
     })
   result
+}
+
+fn householder_from_values(
+  values: List(Float),
+  target_norm: Float,
+) -> Result(Householder, NlaError) {
+  case values {
+    [] -> Error(ZeroNorm)
+    [first, ..tail] -> {
+      let v =
+        vector.from_list([
+          stable_householder_head(first, tail, target_norm),
+          ..tail
+        ])
+      case vector.dot(v, v) {
+        Error(e) -> Error(e)
+        Ok(denom) if denom <=. 0.0 ->
+          case vector.basis(list.length(values), 0) {
+            Error(e) -> Error(e)
+            Ok(e1) ->
+              Ok(Householder(v: e1, beta: 0.0, target_norm: target_norm))
+          }
+        Ok(denom) ->
+          Ok(Householder(v: v, beta: 2.0 /. denom, target_norm: target_norm))
+      }
+    }
+  }
+}
+
+fn stable_householder_head(
+  first: Float,
+  tail: List(Float),
+  norm: Float,
+) -> Float {
+  case first >. 0.0 {
+    False -> first -. norm
+    True ->
+      case numerics.norm2(tail) {
+        Error(_) -> first -. norm
+        Ok(tail_norm) if tail_norm <=. 0.0 -> 0.0
+        Ok(tail_norm) -> 0.0 -. tail_norm *. { tail_norm /. { first +. norm } }
+      }
+  }
 }
 
 fn min_int(a: Int, b: Int) -> Int {

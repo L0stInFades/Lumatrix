@@ -4,6 +4,7 @@ import gleam/list
 import lumatrix/error.{
   type NlaError, DimensionMismatch, InvalidInput, OutOfBounds, ZeroNorm,
 }
+import lumatrix/numerics
 
 /// A dense coordinate vector.
 ///
@@ -75,13 +76,7 @@ pub fn axpy(a: Float, x: Vector, y: Vector) -> Result(Vector, NlaError) {
 
 pub fn dot(a: Vector, b: Vector) -> Result(Float, NlaError) {
   case a.size == b.size {
-    True ->
-      Ok(
-        list.fold(list.zip(a.data, with: b.data), 0.0, fn(acc, pair) {
-          let #(x, y) = pair
-          acc +. x *. y
-        }),
-      )
+    True -> Ok(numerics.dot_pairs(list.zip(a.data, with: b.data)))
     False ->
       Error(DimensionMismatch(
         expected: int.to_string(a.size),
@@ -91,8 +86,7 @@ pub fn dot(a: Vector, b: Vector) -> Result(Float, NlaError) {
 }
 
 pub fn norm2(vector: Vector) -> Result(Float, NlaError) {
-  let squares = list.fold(vector.data, 0.0, fn(acc, x) { acc +. x *. x })
-  case float.square_root(squares) {
+  case numerics.norm2(vector.data) {
     Ok(value) -> Ok(value)
     Error(_) -> Error(InvalidInput("cannot take square root of norm"))
   }

@@ -31,6 +31,29 @@ pub fn matrix_vector_product_test() {
   assert vector.approx_equal(aty, vector.from_list([4.0, 6.0]), tolerance)
 }
 
+pub fn compensated_inner_products_keep_small_terms_test() {
+  let x = vector.from_list([1.0e16, 1.0, -1.0e16])
+  let ones = vector.from_list([1.0, 1.0, 1.0])
+  let assert Ok(row) = matrix.from_rows([[1.0e16, 1.0, -1.0e16]])
+  let assert Ok(square) =
+    matrix.from_rows([[1.0e16, 1.0, -1.0e16], [0.0, 1.0, 0.0]])
+
+  let assert Ok(dot) = vector.dot(x, ones)
+  let assert Ok(product) = matrix.mul_vec(row, ones)
+  let assert Ok(transpose_product) =
+    matrix.transpose_mul_vec(square, vector.from_list([1.0, 1.0]))
+  let assert Ok(matrix_product) = matrix.mul(row, matrix.transpose(row))
+
+  assert close_to(dot, 1.0, 1.0e-8)
+  assert vector.approx_equal(product, vector.from_list([1.0]), 1.0e-8)
+  assert vector.approx_equal(
+    transpose_product,
+    vector.from_list([1.0e16, 2.0, -1.0e16]),
+    1.0e-8,
+  )
+  assert close_to(matrix.unsafe_get(matrix_product, 0, 0), 2.0e32, 1.0e18)
+}
+
 pub fn matrix_column_and_orientation_helpers_test() {
   let first = vector.from_list([1.0, 3.0])
   let second = vector.from_list([2.0, 4.0])
@@ -230,6 +253,32 @@ pub fn cholesky_factor_and_solve_spd_test() {
   assert vector.approx_equal(x, vector.from_list([1.0, 1.0]), tolerance)
 }
 
+pub fn tiny_scale_direct_solvers_are_not_marked_singular_test() {
+  let assert Ok(lu_matrix) =
+    matrix.from_rows([[1.0e-150, 0.0], [0.0, 2.0e-150]])
+  let lu_rhs = vector.from_list([1.0e-150, 4.0e-150])
+  let assert Ok(spd_matrix) =
+    matrix.from_rows([[1.0e-150, 0.0], [0.0, 4.0e-150]])
+  let spd_rhs = vector.from_list([1.0e-150, 8.0e-150])
+
+  let assert Ok(lu_solution) = direct.solve(lu_matrix, lu_rhs)
+  let assert Ok(complete_solution) =
+    direct.solve_complete_pivoting(lu_matrix, lu_rhs)
+  let assert Ok(spd_solution) = direct.solve_spd(spd_matrix, spd_rhs)
+
+  assert vector.approx_equal(lu_solution, vector.from_list([1.0, 2.0]), 1.0e-12)
+  assert vector.approx_equal(
+    complete_solution,
+    vector.from_list([1.0, 2.0]),
+    1.0e-12,
+  )
+  assert vector.approx_equal(
+    spd_solution,
+    vector.from_list([1.0, 2.0]),
+    1.0e-12,
+  )
+}
+
 pub fn householder_maps_vector_to_positive_axis_test() {
   let x = vector.from_list([2.0, 1.0])
   let assert Ok(#(h, a)) = orthogonal.householder_matrix(x)
@@ -240,12 +289,35 @@ pub fn householder_maps_vector_to_positive_axis_test() {
   assert vector.approx_equal(y, vector.from_list([expected_a, 0.0]), tolerance)
 }
 
+pub fn householder_avoids_large_leading_component_cancellation_test() {
+  let x = vector.from_list([1.0e12, 1.0])
+  let assert Ok(#(h, target_norm)) = orthogonal.householder_matrix(x)
+  let assert Ok(y) = matrix.mul_vec(h, x)
+
+  assert close_to(target_norm /. 1.0e12, 1.0, 1.0e-12)
+  assert close_to(unsafe_vector_get(y, 0) /. 1.0e12, 1.0, 1.0e-12)
+  assert close_to(unsafe_vector_get(y, 1), 0.0, 1.0e-4)
+}
+
 pub fn givens_rotation_zeroes_second_component_test() {
   let assert Ok(rotation) = orthogonal.givens(3.0, 4.0)
   let assert Ok(g) = orthogonal.givens_matrix(2, 0, 1, rotation)
   let assert Ok(y) = matrix.mul_vec(g, vector.from_list([3.0, 4.0]))
 
   assert vector.approx_equal(y, vector.from_list([5.0, 0.0]), tolerance)
+}
+
+pub fn givens_uses_scaled_hypotenuse_for_huge_entries_test() {
+  let assert Ok(rotation) = orthogonal.givens(1.0e200, 1.0e200)
+  let assert Ok(g) = orthogonal.givens_matrix(2, 0, 1, rotation)
+  let assert Ok(y) = matrix.mul_vec(g, vector.from_list([1.0e200, 1.0e200]))
+  let assert Ok(root_two) = float.square_root(2.0)
+
+  assert close_to(rotation.r /. 1.0e200, root_two, 1.0e-12)
+  assert close_to(rotation.c, 1.0 /. root_two, 1.0e-12)
+  assert close_to(rotation.s, 1.0 /. root_two, 1.0e-12)
+  assert close_to(unsafe_vector_get(y, 0) /. 1.0e200, root_two, 1.0e-12)
+  assert close_to(unsafe_vector_get(y, 1) /. 1.0e200, 0.0, 1.0e-12)
 }
 
 pub fn householder_qr_reconstructs_matrix_test() {
@@ -632,6 +704,18 @@ pub fn rank_deficient_and_extreme_values_are_handled_test() {
   assert close_to(vector.norm_inf(huge), 1.0e150, 1.0e136)
   assert vector.approx_equal(scaled, vector.from_list([1.0, -1.0]), 1.0e-12)
   assert vector.approx_equal(y, vector.from_list([1.0, 1.0]), 1.0e-12)
+}
+
+pub fn scaled_norms_do_not_overflow_on_huge_values_test() {
+  let huge = vector.from_list([1.0e200, -1.0e200])
+  let assert Ok(vector_norm) = vector.norm2(huge)
+  let assert Ok(a) = matrix.from_rows([[1.0e200, -1.0e200], [0.0, 1.0e200]])
+  let assert Ok(frobenius) = matrix.frobenius_norm(a)
+  let assert Ok(root_two) = float.square_root(2.0)
+  let assert Ok(root_three) = float.square_root(3.0)
+
+  assert close_to(vector_norm /. 1.0e200, root_two, 1.0e-12)
+  assert close_to(frobenius /. 1.0e200, root_three, 1.0e-12)
 }
 
 pub fn power_and_inverse_power_methods_test() {
