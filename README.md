@@ -18,8 +18,8 @@ enough for lightweight numerical work inside Gleam applications and tools.
 - Dense vectors, row-major matrices, and canonical CSR sparse matrices with
   checked construction and opaque internals.
 - Direct solvers, orthogonal transformations, least-squares solvers, iterative
-  methods, Krylov methods, SVD utilities, eigenvalue routines, and basic error
-  analysis.
+  methods, Krylov methods, SVD utilities, real and complex eigenvalue routines,
+  and basic error analysis.
 - Stability-oriented building blocks: pivoted direct solvers, Householder and
   Givens QR paths, residual diagnostics, refinement tools, Krylov solvers with
   explicit breakdown handling, and one-sided Jacobi SVD paths for pseudoinverse,
@@ -57,10 +57,15 @@ Sparse matrices live in `lumatrix/sparse` rather than changing the dense
 sorted by row and column, duplicate coordinates are summed, and stored zeros are
 dropped at construction.
 
+Complex scalars and coordinate vectors live in `lumatrix/complex`. General real
+eigenvalue routines can extract complex eigenpairs from the real Schur form,
+including residual checks for `A * v = lambda * v`.
+
 ## Modules
 
 - `lumatrix/vector` and `lumatrix/matrix`: dense coordinate vectors and row-major
   matrices.
+- `lumatrix/complex`: complex scalars and complex coordinate vectors.
 - `lumatrix/sparse`: canonical CSR sparse matrices, dense conversion,
   matrix-vector products, transposition, scaling, and infinity norm.
 - `lumatrix/direct`: Gaussian elimination, LU with partial pivoting, Cholesky,
@@ -78,8 +83,8 @@ dropped at construction.
 - `lumatrix/krylov`: Arnoldi, Lanczos, GMRES, restarted GMRES, BiCG, BiCGSTAB,
   and MINRES.
 - `lumatrix/eigen`: power methods, Hessenberg and tridiagonal reductions,
-  Jacobi eigen iteration, QR iterations, Schur block helpers, and symmetric
-  eigendecomposition.
+  Jacobi eigen iteration, QR iterations, Schur block helpers, symmetric
+  eigendecomposition, and complex eigenpairs from real Schur form.
 
 ## Example
 

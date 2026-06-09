@@ -1,5 +1,6 @@
 import gleam/float
 import gleeunit
+import lumatrix/complex
 import lumatrix/direct
 import lumatrix/eigen
 import lumatrix/error
@@ -150,6 +151,26 @@ pub fn sparse_matrix_dense_conversion_and_errors_test() {
     Error(error.OutOfBounds(0, 2)) -> Nil
     _ -> panic as "sparse.from_entries should reject invalid coordinates"
   }
+}
+
+pub fn complex_number_and_vector_operations_test() {
+  let z = complex.new(real: 3.0, imaginary: 4.0)
+  let w = complex.new(real: 1.0, imaginary: -2.0)
+  let assert Ok(magnitude) = complex.abs(z)
+  let product = complex.mul(z, w)
+  let assert Ok(quotient) = complex.div(product, w)
+  let v = complex.vector_from_list([z, w])
+  let assert Ok(norm) = complex.vector_norm2(v)
+  let assert Ok(unit) = complex.vector_normalize(v)
+  let assert Ok(unit_norm) = complex.vector_norm2(unit)
+  let assert Ok(axpy) =
+    complex.vector_axpy(complex.new(real: 0.0, imaginary: 1.0), v, v)
+
+  assert close_to(magnitude, 5.0, tolerance)
+  assert complex.approx_equal(quotient, z, tolerance)
+  assert close_to(norm, 5.477225575051661, 1.0e-12)
+  assert close_to(unit_norm, 1.0, 1.0e-12)
+  assert complex.vector_dimension(axpy) == 2
 }
 
 pub fn lu_solve_with_partial_pivoting_test() {
@@ -452,6 +473,12 @@ pub fn iterative_and_eigen_non_convergence_is_structured_test() {
     Error(error.InvalidInput(_)) -> Nil
     _ -> panic as "Schur eigenvalue extraction should reject non-convergence"
   }
+  case eigen.complex_eigenpairs_of(general, 0, 1.0e-12) {
+    Error(error.NoConvergence(iterations: 0, residual: residual)) -> {
+      assert residual >. 0.0
+    }
+    _ -> panic as "complex eigenpair extraction should reject non-convergence"
+  }
 }
 
 pub fn least_squares_normal_and_qr_agree_test() {
@@ -671,6 +698,10 @@ pub fn real_schur_blocks_detect_complex_pair_test() {
   let assert Ok(values) = eigen.real_schur_eigenvalues(schur.t, 1.0e-8)
   let assert Ok(values_from_matrix) =
     eigen.real_schur_eigenvalues_of(rotation, 10, 1.0e-8)
+  let assert Ok(pairs_from_schur) =
+    eigen.real_schur_complex_eigenpairs(schur.q, schur.t, 1.0e-8)
+  let assert Ok(pairs_from_matrix) =
+    eigen.complex_eigenpairs_of(rotation, 10, 1.0e-8)
 
   assert schur.converged
   case blocks {
@@ -693,6 +724,8 @@ pub fn real_schur_blocks_detect_complex_pair_test() {
   }
   assert_rotation_eigenvalues(values)
   assert_rotation_eigenvalues(values_from_matrix)
+  assert_rotation_complex_eigenpairs(pairs_from_schur)
+  assert_rotation_complex_eigenpairs(pairs_from_matrix)
 }
 
 pub fn symmetric_tridiagonal_and_jacobi_eigen_test() {
@@ -853,6 +886,37 @@ fn assert_rotation_eigenvalues(values: List(eigen.Eigenvalue)) -> Nil {
       assert close_to(imag_neg, -1.0, 1.0e-8)
     }
     _ -> panic as "expected conjugate complex eigenvalues"
+  }
+}
+
+fn assert_rotation_complex_eigenpairs(
+  pairs: List(eigen.ComplexEigenpair),
+) -> Nil {
+  case pairs {
+    [positive, negative] -> {
+      assert complex.approx_equal(
+        positive.value,
+        complex.new(real: 0.0, imaginary: 1.0),
+        1.0e-8,
+      )
+      assert complex.approx_equal(
+        negative.value,
+        complex.new(real: 0.0, imaginary: -1.0),
+        1.0e-8,
+      )
+      assert positive.converged
+      assert negative.converged
+      assert positive.residual_norm <=. 1.0e-8
+      assert negative.residual_norm <=. 1.0e-8
+      assert complex.vector_dimension(positive.vector) == 2
+      assert complex.vector_dimension(negative.vector) == 2
+
+      let assert Ok(positive_norm) = complex.vector_norm2(positive.vector)
+      let assert Ok(negative_norm) = complex.vector_norm2(negative.vector)
+      assert close_to(positive_norm, 1.0, 1.0e-8)
+      assert close_to(negative_norm, 1.0, 1.0e-8)
+    }
+    _ -> panic as "expected conjugate complex eigenpairs"
   }
 }
 
