@@ -1507,18 +1507,9 @@ fn schur_known_rhs(
   from_col: Int,
   y: complex.ComplexVector,
 ) -> complex.Complex {
-  list.fold(
-    list.drop(matrix.indices(matrix.cols(t)), up_to: from_col),
-    complex.zero(),
-    fn(acc, col) {
-      complex.add(
-        acc,
-        complex.scale(
-          unsafe_complex_get(y, col),
-          matrix.unsafe_get(t, row, col),
-        ),
-      )
-    },
+  real_complex_dot(
+    list.drop(matrix_row_values(t, row), up_to: from_col),
+    list.drop(complex.vector_to_list(y), up_to: from_col),
   )
 }
 
@@ -1595,26 +1586,16 @@ fn transform_schur_vector(
         expected: int.to_string(matrix.cols(q)),
         actual: int.to_string(complex.vector_dimension(y)),
       ))
-    True ->
+    True -> {
+      let y_values = complex.vector_to_list(y)
       Ok(
         complex.vector_from_list(
-          list.map(matrix.indices(matrix.rows(q)), fn(row) {
-            list.fold(
-              matrix.indices(matrix.cols(q)),
-              complex.zero(),
-              fn(acc, col) {
-                complex.add(
-                  acc,
-                  complex.scale(
-                    unsafe_complex_get(y, col),
-                    matrix.unsafe_get(q, row, col),
-                  ),
-                )
-              },
-            )
+          list.map(matrix.to_rows(q), fn(row) {
+            real_complex_dot(row, y_values)
           }),
         ),
       )
+    }
   }
 }
 
@@ -1679,27 +1660,33 @@ fn real_matrix_mul_complex_vec(
         expected: int.to_string(matrix.cols(a)),
         actual: int.to_string(complex.vector_dimension(x)),
       ))
-    True ->
+    True -> {
+      let x_values = complex.vector_to_list(x)
       Ok(
         complex.vector_from_list(
-          list.map(matrix.indices(matrix.rows(a)), fn(row) {
-            list.fold(
-              matrix.indices(matrix.cols(a)),
-              complex.zero(),
-              fn(acc, col) {
-                complex.add(
-                  acc,
-                  complex.scale(
-                    unsafe_complex_get(x, col),
-                    matrix.unsafe_get(a, row, col),
-                  ),
-                )
-              },
-            )
+          list.map(matrix.to_rows(a), fn(row) {
+            real_complex_dot(row, x_values)
           }),
         ),
       )
+    }
   }
+}
+
+fn real_complex_dot(
+  row: List(Float),
+  values: List(complex.Complex),
+) -> complex.Complex {
+  list.fold(list.zip(row, with: values), complex.zero(), fn(acc, pair) {
+    let #(matrix_value, vector_value) = pair
+    complex.add(acc, complex.scale(vector_value, matrix_value))
+  })
+}
+
+fn matrix_row_values(a: Matrix, row: Int) -> List(Float) {
+  list.map(matrix.indices(matrix.cols(a)), fn(col) {
+    matrix.unsafe_get(a, row, col)
+  })
 }
 
 fn validate_square_pair(a: Matrix, b: Matrix) -> Result(Nil, NlaError) {
@@ -1755,14 +1742,6 @@ fn block_start(block: SchurBlock) -> Int {
       determinant: _,
     ) -> start
   }
-}
-
-fn unsafe_complex_get(
-  vector: complex.ComplexVector,
-  index: Int,
-) -> complex.Complex {
-  let assert Ok(value) = complex.vector_get(vector, index)
-  value
 }
 
 fn set_complex_vector(

@@ -207,20 +207,26 @@ pub fn minres(
                 happy_breakdown: False,
               ))
             Ok(beta0) -> {
-              let q0 = vector.scale(r0, 1.0 /. beta0)
-              let assert Ok(q_prev) = vector.zeros(matrix.rows(a))
-              minres_loop(
+              let assert Ok(zero) = vector.zeros(matrix.rows(a))
+              minres_short_loop(
                 a,
                 b,
                 initial,
+                r0,
+                r0,
                 beta0,
-                q_prev,
                 0.0,
-                [q0],
-                [],
+                zero,
+                zero,
+                -1.0,
+                0.0,
+                0.0,
+                0.0,
+                beta0,
                 0,
                 max_iterations,
                 tolerance,
+                False,
               )
             }
           }
@@ -778,172 +784,240 @@ fn bicgstab_finish_step(
   }
 }
 
-fn minres_loop(
+fn minres_short_loop(
   a: Matrix,
   b: Vector,
-  initial: Vector,
-  beta0: Float,
-  q_prev: Vector,
-  beta_prev: Float,
-  vectors: List(Vector),
-  entries: List(#(Int, Int, Float)),
-  k: Int,
+  x: Vector,
+  r_prev: Vector,
+  r_curr: Vector,
+  beta: Float,
+  old_beta: Float,
+  w_older: Vector,
+  w_old: Vector,
+  cs: Float,
+  sn: Float,
+  dbar: Float,
+  epsln: Float,
+  phibar: Float,
+  iteration: Int,
   max_iterations: Int,
   tolerance: Float,
+  happy_breakdown: Bool,
 ) -> Result(GmresResult, NlaError) {
-  let qk = unsafe_vector_at(vectors, k)
-  case matrix.mul_vec(a, qk) {
-    Error(e) -> Error(e)
-    Ok(aq) ->
-      case vector.axpy(0.0 -. beta_prev, q_prev, aq) {
-        Error(e) -> Error(e)
-        Ok(w0) ->
-          case vector.dot(qk, w0) {
+  case iteration >= max_iterations || happy_breakdown {
+    True -> finish_solver(a, b, x, iteration, tolerance, happy_breakdown)
+    False ->
+      case beta <=. breakdown_tolerance {
+        True -> finish_solver(a, b, x, iteration, tolerance, True)
+        False -> {
+          let v = vector.scale(r_curr, 1.0 /. beta)
+          case minres_lanczos_step(a, v, r_prev, beta, old_beta, iteration) {
             Error(e) -> Error(e)
-            Ok(alpha) ->
-              case vector.axpy(0.0 -. alpha, qk, w0) {
+            Ok(y0) ->
+              case vector.dot(v, y0) {
                 Error(e) -> Error(e)
-                Ok(w) ->
-                  case vector.norm2(w) {
+                Ok(alpha) ->
+                  case vector.axpy(0.0 -. alpha /. beta, r_curr, y0) {
                     Error(e) -> Error(e)
-                    Ok(beta_next) ->
-                      minres_finish_iteration(
-                        a,
-                        b,
-                        initial,
-                        beta0,
-                        qk,
-                        w,
-                        alpha,
-                        beta_prev,
-                        beta_next,
-                        vectors,
-                        entries,
-                        k,
-                        max_iterations,
-                        tolerance,
-                      )
+                    Ok(next_r) ->
+                      case vector.norm2(next_r) {
+                        Error(e) -> Error(e)
+                        Ok(next_beta) ->
+                          minres_rotate_and_update(
+                            a,
+                            b,
+                            x,
+                            r_curr,
+                            next_r,
+                            v,
+                            beta,
+                            next_beta,
+                            w_older,
+                            w_old,
+                            cs,
+                            sn,
+                            dbar,
+                            epsln,
+                            phibar,
+                            alpha,
+                            iteration,
+                            max_iterations,
+                            tolerance,
+                          )
+                      }
                   }
               }
           }
+        }
       }
   }
 }
 
-fn minres_finish_iteration(
+fn minres_lanczos_step(
+  a: Matrix,
+  v: Vector,
+  r_prev: Vector,
+  beta: Float,
+  old_beta: Float,
+  iteration: Int,
+) -> Result(Vector, NlaError) {
+  case matrix.mul_vec(a, v) {
+    Error(e) -> Error(e)
+    Ok(av) ->
+      case iteration >= 1 {
+        True -> vector.axpy(0.0 -. beta /. old_beta, r_prev, av)
+        False -> Ok(av)
+      }
+  }
+}
+
+fn minres_rotate_and_update(
   a: Matrix,
   b: Vector,
-  initial: Vector,
-  beta0: Float,
-  qk: Vector,
-  w: Vector,
+  x: Vector,
+  r_curr: Vector,
+  next_r: Vector,
+  v: Vector,
+  beta: Float,
+  next_beta: Float,
+  w_older: Vector,
+  w_old: Vector,
+  cs: Float,
+  sn: Float,
+  dbar: Float,
+  epsln: Float,
+  phibar: Float,
   alpha: Float,
-  beta_prev: Float,
-  beta_next: Float,
-  vectors: List(Vector),
-  entries: List(#(Int, Int, Float)),
-  k: Int,
+  iteration: Int,
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(GmresResult, NlaError) {
-  let completed_steps = k + 1
-  let entries = minres_entries(entries, k, alpha, beta_prev, beta_next)
-  case solve_minres_subproblem(matrix.rows(a), vectors, entries, beta0, k) {
-    Error(e) -> Error(e)
-    Ok(next_x_delta) ->
-      case vector.add(initial, next_x_delta) {
+  let oldeps = epsln
+  let delta = cs *. dbar +. sn *. alpha
+  let gbar = sn *. dbar -. cs *. alpha
+  let next_epsln = sn *. next_beta
+  let next_dbar = 0.0 -. cs *. next_beta
+  case float.square_root(gbar *. gbar +. next_beta *. next_beta) {
+    Error(_) -> Error(InvalidInput("MINRES rotation norm is invalid"))
+    Ok(gamma) if gamma <=. breakdown_tolerance ->
+      finish_solver(a, b, x, iteration, tolerance, True)
+    Ok(gamma) -> {
+      let next_cs = gbar /. gamma
+      let next_sn = next_beta /. gamma
+      let phi = next_cs *. phibar
+      let next_phibar = next_sn *. phibar
+      case minres_direction(v, oldeps, w_older, delta, w_old, gamma) {
         Error(e) -> Error(e)
-        Ok(next_x) ->
-          case error_analysis.residual_norm2(a, next_x, b) {
+        Ok(w) ->
+          case vector.axpy(phi, w, x) {
             Error(e) -> Error(e)
-            Ok(r_norm) if r_norm <=. tolerance ->
-              Ok(GmresResult(
-                solution: next_x,
-                iterations: completed_steps,
-                residual_norm: r_norm,
-                converged: True,
-                happy_breakdown: beta_next <=. tolerance,
-              ))
-            Ok(r_norm) ->
-              case
-                completed_steps >= max_iterations
-                || completed_steps >= matrix.rows(a)
-                || beta_next <=. tolerance
-              {
-                True ->
-                  Ok(GmresResult(
-                    solution: next_x,
-                    iterations: completed_steps,
-                    residual_norm: r_norm,
-                    converged: False,
-                    happy_breakdown: beta_next <=. tolerance,
-                  ))
-                False -> {
-                  let next_q = vector.scale(w, 1.0 /. beta_next)
-                  minres_loop(
-                    a,
-                    b,
-                    initial,
-                    beta0,
-                    qk,
-                    beta_next,
-                    list.append(vectors, [next_q]),
-                    entries,
-                    k + 1,
-                    max_iterations,
-                    tolerance,
-                  )
-                }
-              }
+            Ok(next_x) ->
+              minres_finish_short_iteration(
+                a,
+                b,
+                next_x,
+                r_curr,
+                next_r,
+                next_beta,
+                beta,
+                w_old,
+                w,
+                next_cs,
+                next_sn,
+                next_dbar,
+                next_epsln,
+                next_phibar,
+                iteration + 1,
+                max_iterations,
+                tolerance,
+              )
           }
       }
-  }
-}
-
-fn minres_entries(
-  entries: List(#(Int, Int, Float)),
-  k: Int,
-  alpha: Float,
-  beta_prev: Float,
-  beta_next: Float,
-) -> List(#(Int, Int, Float)) {
-  let entries = [#(k, k, alpha), #(k + 1, k, beta_next), ..entries]
-  case k > 0 {
-    True -> [#(k - 1, k, beta_prev), ..entries]
-    False -> entries
-  }
-}
-
-fn solve_minres_subproblem(
-  rows: Int,
-  vectors: List(Vector),
-  entries: List(#(Int, Int, Float)),
-  beta0: Float,
-  k: Int,
-) -> Result(Vector, NlaError) {
-  let completed_steps = k + 1
-  let assert Ok(t_bar) =
-    matrix.from_fn(
-      rows: completed_steps + 1,
-      cols: completed_steps,
-      with: fn(i, j) { entry_value(entries, i, j) },
-    )
-  let rhs = gmres_rhs(completed_steps + 1, beta0)
-  case least_squares.householder_qr(t_bar, rhs) {
-    Error(e) -> Error(e)
-    Ok(ls) -> {
-      let basis = basis_from_vectors(rows, vectors, completed_steps)
-      matrix.mul_vec(basis, ls.solution)
     }
   }
 }
 
-fn basis_from_vectors(rows: Int, vectors: List(Vector), cols: Int) -> Matrix {
-  let assert Ok(result) =
-    matrix.from_fn(rows: rows, cols: cols, with: fn(i, j) {
-      unsafe_vector_get(unsafe_vector_at(vectors, j), i)
-    })
-  result
+fn minres_direction(
+  v: Vector,
+  oldeps: Float,
+  w_older: Vector,
+  delta: Float,
+  w_old: Vector,
+  gamma: Float,
+) -> Result(Vector, NlaError) {
+  case vector.axpy(0.0 -. oldeps, w_older, v) {
+    Error(e) -> Error(e)
+    Ok(without_older) ->
+      case vector.axpy(0.0 -. delta, w_old, without_older) {
+        Error(e) -> Error(e)
+        Ok(direction) -> Ok(vector.scale(direction, 1.0 /. gamma))
+      }
+  }
+}
+
+fn minres_finish_short_iteration(
+  a: Matrix,
+  b: Vector,
+  x: Vector,
+  r_curr: Vector,
+  next_r: Vector,
+  beta: Float,
+  old_beta: Float,
+  w_older: Vector,
+  w_old: Vector,
+  cs: Float,
+  sn: Float,
+  dbar: Float,
+  epsln: Float,
+  phibar: Float,
+  iteration: Int,
+  max_iterations: Int,
+  tolerance: Float,
+) -> Result(GmresResult, NlaError) {
+  let happy_breakdown = beta <=. tolerance
+  case error_analysis.residual_norm2(a, x, b) {
+    Error(e) -> Error(e)
+    Ok(r_norm) if r_norm <=. tolerance ->
+      Ok(GmresResult(
+        solution: x,
+        iterations: iteration,
+        residual_norm: r_norm,
+        converged: True,
+        happy_breakdown: happy_breakdown,
+      ))
+    Ok(r_norm) ->
+      case iteration >= max_iterations || happy_breakdown {
+        True ->
+          Ok(GmresResult(
+            solution: x,
+            iterations: iteration,
+            residual_norm: r_norm,
+            converged: False,
+            happy_breakdown: happy_breakdown,
+          ))
+        False ->
+          minres_short_loop(
+            a,
+            b,
+            x,
+            r_curr,
+            next_r,
+            beta,
+            old_beta,
+            w_older,
+            w_old,
+            cs,
+            sn,
+            dbar,
+            epsln,
+            phibar,
+            iteration,
+            max_iterations,
+            tolerance,
+            happy_breakdown,
+          )
+      }
+  }
 }
 
 fn arnoldi_loop(
