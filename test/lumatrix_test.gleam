@@ -31,6 +31,29 @@ pub fn matrix_vector_product_test() {
   assert vector.approx_equal(aty, vector.from_list([4.0, 6.0]), tolerance)
 }
 
+pub fn compensated_inner_products_keep_small_terms_test() {
+  let x = vector.from_list([1.0e16, 1.0, -1.0e16])
+  let ones = vector.from_list([1.0, 1.0, 1.0])
+  let assert Ok(row) = matrix.from_rows([[1.0e16, 1.0, -1.0e16]])
+  let assert Ok(square) =
+    matrix.from_rows([[1.0e16, 1.0, -1.0e16], [0.0, 1.0, 0.0]])
+
+  let assert Ok(dot) = vector.dot(x, ones)
+  let assert Ok(product) = matrix.mul_vec(row, ones)
+  let assert Ok(transpose_product) =
+    matrix.transpose_mul_vec(square, vector.from_list([1.0, 1.0]))
+  let assert Ok(matrix_product) = matrix.mul(row, matrix.transpose(row))
+
+  assert close_to(dot, 1.0, 1.0e-8)
+  assert vector.approx_equal(product, vector.from_list([1.0]), 1.0e-8)
+  assert vector.approx_equal(
+    transpose_product,
+    vector.from_list([1.0e16, 2.0, -1.0e16]),
+    1.0e-8,
+  )
+  assert close_to(matrix.unsafe_get(matrix_product, 0, 0), 2.0e32, 1.0e18)
+}
+
 pub fn matrix_column_and_orientation_helpers_test() {
   let first = vector.from_list([1.0, 3.0])
   let second = vector.from_list([2.0, 4.0])
@@ -99,6 +122,20 @@ pub fn sparse_matrix_canonicalizes_and_multiplies_test() {
   assert vector.approx_equal(aty, vector.from_list([12.0, 5.0, 0.0]), tolerance)
   assert close(stored, 5.0)
   assert close(implicit_zero, 0.0)
+}
+
+pub fn sparse_inner_products_keep_small_terms_test() {
+  let assert Ok(a) =
+    sparse.from_entries(rows: 1, cols: 3, entries: [
+      sparse.Entry(row: 0, col: 0, value: 1.0e16),
+      sparse.Entry(row: 0, col: 1, value: 1.0),
+      sparse.Entry(row: 0, col: 2, value: -1.0e16),
+    ])
+  let ones = vector.from_list([1.0, 1.0, 1.0])
+
+  let assert Ok(product) = sparse.mul_vec(a, ones)
+
+  assert vector.approx_equal(product, vector.from_list([1.0]), 1.0e-8)
 }
 
 pub fn sparse_matrix_dense_conversion_and_errors_test() {
@@ -173,6 +210,26 @@ pub fn complex_number_and_vector_operations_test() {
   assert complex.vector_dimension(axpy) == 2
 }
 
+pub fn complex_norms_and_division_scale_extreme_values_test() {
+  let huge = complex.new(real: 1.0e200, imaginary: -1.0e200)
+  let divisor = complex.new(real: 1.0e200, imaginary: 1.0e200)
+  let vector =
+    complex.vector_from_list([huge, complex.new(real: -1.0e200, imaginary: 0.0)])
+  let assert Ok(magnitude) = complex.abs(huge)
+  let assert Ok(quotient) = complex.div(huge, divisor)
+  let assert Ok(vector_norm) = complex.vector_norm2(vector)
+  let assert Ok(root_two) = float.square_root(2.0)
+  let assert Ok(root_three) = float.square_root(3.0)
+
+  assert close_to(magnitude /. 1.0e200, root_two, 1.0e-12)
+  assert complex.approx_equal(
+    quotient,
+    complex.new(real: 0.0, imaginary: -1.0),
+    1.0e-12,
+  )
+  assert close_to(vector_norm /. 1.0e200, root_three, 1.0e-12)
+}
+
 pub fn lu_solve_with_partial_pivoting_test() {
   let assert Ok(a) = matrix.from_rows([[0.0, 2.0], [1.0, 1.0]])
   let b = vector.from_list([4.0, 3.0])
@@ -230,6 +287,48 @@ pub fn cholesky_factor_and_solve_spd_test() {
   assert vector.approx_equal(x, vector.from_list([1.0, 1.0]), tolerance)
 }
 
+pub fn cholesky_accepts_large_scaled_spd_off_diagonal_test() {
+  let scale = 1.0e60
+  let assert Ok(base) = matrix.from_rows([[4.0, 2.0], [2.0, 3.0]])
+  let a = matrix.scale(base, scale)
+  let b = vector.from_list([6.0 *. scale, 5.0 *. scale])
+
+  let assert Ok(factors) = direct.cholesky_factor(a)
+  let assert Ok(reconstructed) =
+    matrix.mul(factors.l, matrix.transpose(factors.l))
+  let recovered = matrix.scale(reconstructed, 1.0 /. scale)
+  let assert Ok(x) = direct.solve_spd(a, b)
+
+  assert matrix.approx_equal(recovered, base, 1.0e-8)
+  assert vector.approx_equal(x, vector.from_list([1.0, 1.0]), 1.0e-8)
+}
+
+pub fn tiny_scale_direct_solvers_are_not_marked_singular_test() {
+  let assert Ok(lu_matrix) =
+    matrix.from_rows([[1.0e-150, 0.0], [0.0, 2.0e-150]])
+  let lu_rhs = vector.from_list([1.0e-150, 4.0e-150])
+  let assert Ok(spd_matrix) =
+    matrix.from_rows([[1.0e-150, 0.0], [0.0, 4.0e-150]])
+  let spd_rhs = vector.from_list([1.0e-150, 8.0e-150])
+
+  let assert Ok(lu_solution) = direct.solve(lu_matrix, lu_rhs)
+  let assert Ok(complete_solution) =
+    direct.solve_complete_pivoting(lu_matrix, lu_rhs)
+  let assert Ok(spd_solution) = direct.solve_spd(spd_matrix, spd_rhs)
+
+  assert vector.approx_equal(lu_solution, vector.from_list([1.0, 2.0]), 1.0e-12)
+  assert vector.approx_equal(
+    complete_solution,
+    vector.from_list([1.0, 2.0]),
+    1.0e-12,
+  )
+  assert vector.approx_equal(
+    spd_solution,
+    vector.from_list([1.0, 2.0]),
+    1.0e-12,
+  )
+}
+
 pub fn householder_maps_vector_to_positive_axis_test() {
   let x = vector.from_list([2.0, 1.0])
   let assert Ok(#(h, a)) = orthogonal.householder_matrix(x)
@@ -240,12 +339,35 @@ pub fn householder_maps_vector_to_positive_axis_test() {
   assert vector.approx_equal(y, vector.from_list([expected_a, 0.0]), tolerance)
 }
 
+pub fn householder_avoids_large_leading_component_cancellation_test() {
+  let x = vector.from_list([1.0e12, 1.0])
+  let assert Ok(#(h, target_norm)) = orthogonal.householder_matrix(x)
+  let assert Ok(y) = matrix.mul_vec(h, x)
+
+  assert close_to(target_norm /. 1.0e12, 1.0, 1.0e-12)
+  assert close_to(unsafe_vector_get(y, 0) /. 1.0e12, 1.0, 1.0e-12)
+  assert close_to(unsafe_vector_get(y, 1), 0.0, 1.0e-4)
+}
+
 pub fn givens_rotation_zeroes_second_component_test() {
   let assert Ok(rotation) = orthogonal.givens(3.0, 4.0)
   let assert Ok(g) = orthogonal.givens_matrix(2, 0, 1, rotation)
   let assert Ok(y) = matrix.mul_vec(g, vector.from_list([3.0, 4.0]))
 
   assert vector.approx_equal(y, vector.from_list([5.0, 0.0]), tolerance)
+}
+
+pub fn givens_uses_scaled_hypotenuse_for_huge_entries_test() {
+  let assert Ok(rotation) = orthogonal.givens(1.0e200, 1.0e200)
+  let assert Ok(g) = orthogonal.givens_matrix(2, 0, 1, rotation)
+  let assert Ok(y) = matrix.mul_vec(g, vector.from_list([1.0e200, 1.0e200]))
+  let assert Ok(root_two) = float.square_root(2.0)
+
+  assert close_to(rotation.r /. 1.0e200, root_two, 1.0e-12)
+  assert close_to(rotation.c, 1.0 /. root_two, 1.0e-12)
+  assert close_to(rotation.s, 1.0 /. root_two, 1.0e-12)
+  assert close_to(unsafe_vector_get(y, 0) /. 1.0e200, root_two, 1.0e-12)
+  assert close_to(unsafe_vector_get(y, 1) /. 1.0e200, 0.0, 1.0e-12)
 }
 
 pub fn householder_qr_reconstructs_matrix_test() {
@@ -291,6 +413,25 @@ pub fn gram_schmidt_qr_reconstructs_matrix_test() {
   assert modified.form == orthogonal.ThinQR
   assert matrix.approx_equal(classical_reconstructed, a, tolerance)
   assert matrix.approx_equal(modified_reconstructed, a, tolerance)
+  assert matrix.approx_equal(classical_qtq, identity, tolerance)
+  assert matrix.approx_equal(modified_qtq, identity, tolerance)
+}
+
+pub fn gram_schmidt_accepts_tiny_scaled_full_rank_columns_test() {
+  let assert Ok(a) = matrix.from_rows([[1.0e-150, 0.0], [0.0, 2.0e-150]])
+
+  let assert Ok(classical) = orthogonal.classical_gram_schmidt_qr(a)
+  let assert Ok(modified) = orthogonal.modified_gram_schmidt_qr(a)
+  let assert Ok(classical_reconstructed) = matrix.mul(classical.q, classical.r)
+  let assert Ok(modified_reconstructed) = matrix.mul(modified.q, modified.r)
+  let assert Ok(classical_qtq) =
+    matrix.mul(matrix.transpose(classical.q), classical.q)
+  let assert Ok(modified_qtq) =
+    matrix.mul(matrix.transpose(modified.q), modified.q)
+  let assert Ok(identity) = matrix.identity(2)
+
+  assert matrix.approx_equal(classical_reconstructed, a, 1.0e-160)
+  assert matrix.approx_equal(modified_reconstructed, a, 1.0e-160)
   assert matrix.approx_equal(classical_qtq, identity, tolerance)
   assert matrix.approx_equal(modified_qtq, identity, tolerance)
 }
@@ -378,6 +519,25 @@ pub fn jacobi_gauss_seidel_and_sor_converge_test() {
   )
 }
 
+pub fn stationary_methods_accept_tiny_scaled_diagonal_systems_test() {
+  let assert Ok(a) = matrix.from_rows([[1.0e-150, 0.0], [0.0, 2.0e-150]])
+  let b = vector.from_list([1.0e-150, 4.0e-150])
+  let assert Ok(initial) = vector.zeros(2)
+  let expected = vector.from_list([1.0, 2.0])
+
+  let assert Ok(jacobi) = iterative.jacobi(a, b, initial, 4, 1.0e-160)
+  let assert Ok(gauss_seidel) =
+    iterative.gauss_seidel(a, b, initial, 4, 1.0e-160)
+  let assert Ok(sor) = iterative.sor(a, b, initial, 1.0, 4, 1.0e-160)
+
+  assert jacobi.converged
+  assert gauss_seidel.converged
+  assert sor.converged
+  assert vector.approx_equal(jacobi.solution, expected, 1.0e-12)
+  assert vector.approx_equal(gauss_seidel.solution, expected, 1.0e-12)
+  assert vector.approx_equal(sor.solution, expected, 1.0e-12)
+}
+
 pub fn conjugate_gradient_family_converges_test() {
   let assert Ok(a) = matrix.from_rows([[4.0, 1.0], [1.0, 3.0]])
   let b = vector.from_list([1.0, 2.0])
@@ -409,6 +569,34 @@ pub fn conjugate_gradient_family_converges_test() {
   assert vector.approx_equal(cg.solution, expected, 1.0e-8)
   assert vector.approx_equal(practical_cg.solution, expected, 1.0e-8)
   assert vector.approx_equal(identity_pcg.solution, expected, 1.0e-8)
+  assert vector.approx_equal(pcg.solution, expected, 1.0e-8)
+}
+
+pub fn conjugate_gradient_family_uses_relative_direction_checks_test() {
+  let scale = 1.0e-80
+  let assert Ok(a) =
+    matrix.from_rows([
+      [4.0 *. scale, 1.0 *. scale],
+      [1.0 *. scale, 3.0 *. scale],
+    ])
+  let b = vector.from_list([1.0 *. scale, 2.0 *. scale])
+  let assert Ok(initial) = vector.zeros(2)
+  let expected = vector.from_list([0.09090909090909091, 0.6363636363636364])
+
+  let assert Ok(sd) = iterative.steepest_descent(a, b, initial, 80, 1.0e-88)
+  let assert Ok(cg) = iterative.conjugate_gradient(a, b, initial, 10, 1.0e-88)
+  let assert Ok(practical_cg) =
+    iterative.practical_conjugate_gradient(a, b, initial, 10, 1.0e-88, 2)
+  let assert Ok(pcg) =
+    iterative.preconditioned_conjugate_gradient(a, b, initial, 10, 1.0e-88)
+
+  assert sd.converged
+  assert cg.converged
+  assert practical_cg.converged
+  assert pcg.converged
+  assert vector.approx_equal(sd.solution, expected, 1.0e-5)
+  assert vector.approx_equal(cg.solution, expected, 1.0e-8)
+  assert vector.approx_equal(practical_cg.solution, expected, 1.0e-8)
   assert vector.approx_equal(pcg.solution, expected, 1.0e-8)
 }
 
@@ -565,6 +753,17 @@ pub fn svd_reconstructs_matrix_and_spectrum_test() {
   assert close_to(norm2, expected_largest, 1.0e-8)
 }
 
+pub fn svd_handles_extreme_column_scales_test() {
+  let assert Ok(a) = matrix.from_rows([[1.0e150, 0.0], [0.0, 1.0e-150]])
+
+  let assert Ok(result) = svd.decompose(a)
+  let assert [largest, smallest] = vector.to_list(result.singular_values)
+
+  assert result.converged
+  assert close_to(largest /. 1.0e150, 1.0, 1.0e-12)
+  assert close_to(smallest /. 1.0e-150, 1.0, 1.0e-12)
+}
+
 pub fn svd_pseudoinverse_handles_rank_deficiency_test() {
   let assert Ok(a) = matrix.from_rows([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]])
   let b = vector.from_list([1.0, 2.0, 3.0])
@@ -634,6 +833,18 @@ pub fn rank_deficient_and_extreme_values_are_handled_test() {
   assert vector.approx_equal(y, vector.from_list([1.0, 1.0]), 1.0e-12)
 }
 
+pub fn scaled_norms_do_not_overflow_on_huge_values_test() {
+  let huge = vector.from_list([1.0e200, -1.0e200])
+  let assert Ok(vector_norm) = vector.norm2(huge)
+  let assert Ok(a) = matrix.from_rows([[1.0e200, -1.0e200], [0.0, 1.0e200]])
+  let assert Ok(frobenius) = matrix.frobenius_norm(a)
+  let assert Ok(root_two) = float.square_root(2.0)
+  let assert Ok(root_three) = float.square_root(3.0)
+
+  assert close_to(vector_norm /. 1.0e200, root_two, 1.0e-12)
+  assert close_to(frobenius /. 1.0e200, root_three, 1.0e-12)
+}
+
 pub fn power_and_inverse_power_methods_test() {
   let assert Ok(a) = matrix.from_rows([[2.0, 0.0], [0.0, 1.0]])
   let initial = vector.from_list([1.0, 1.0])
@@ -688,6 +899,24 @@ pub fn shifted_qr_variants_converge_test() {
   assert close_to(matrix.unsafe_get(symmetric.t, 1, 1), 1.0, 1.0e-6)
   assert close_to(matrix.unsafe_get(implicit.t, 1, 1), 1.0, 1.0e-6)
   assert close_to(matrix.unsafe_get(double_shift.t, 1, 1), 1.0, 1.0e-6)
+}
+
+pub fn wilkinson_shift_uses_scaled_hypotenuse_test() {
+  let assert Ok(a) = matrix.from_rows([[2.0e200, 1.0e200], [1.0e200, 1.0e200]])
+
+  let shift = eigen.wilkinson_shift(a)
+
+  assert close_to(shift /. 1.0e200, 0.3819660112501051, 1.0e-12)
+}
+
+pub fn wilkinson_shift_keeps_tiny_scaled_shift_test() {
+  let scale = 1.0e-150
+  let assert Ok(a) =
+    matrix.from_rows([[2.0 *. scale, 1.0 *. scale], [1.0 *. scale, scale]])
+
+  let shift = eigen.wilkinson_shift(a)
+
+  assert close_to(shift /. scale, 0.3819660112501051, 1.0e-12)
 }
 
 pub fn symmetric_qr_rejects_nonsymmetric_matrix_test() {
@@ -750,6 +979,46 @@ pub fn real_schur_blocks_detect_complex_pair_test() {
   assert_rotation_eigenvalues(values_from_matrix)
   assert_rotation_complex_eigenpairs(pairs_from_schur)
   assert_rotation_complex_eigenpairs(pairs_from_matrix)
+}
+
+pub fn real_schur_blocks_use_scaled_complex_discriminants_test() {
+  let scale = 1.0e200
+  let assert Ok(block) = matrix.from_rows([[0.0, 0.0 -. scale], [scale, 0.0]])
+
+  let assert Ok(blocks) = eigen.real_schur_blocks(block, 1.0e-8)
+  let assert Ok(values) = eigen.real_schur_eigenvalues(block, 1.0e-8)
+
+  case blocks {
+    [
+      eigen.ComplexConjugateBlock(
+        start: start,
+        real: real_part,
+        imaginary: imaginary,
+        trace: trace,
+        determinant: _,
+      ),
+    ] -> {
+      assert start == 0
+      assert close_to(real_part, 0.0, 1.0e-8)
+      assert close_to(imaginary /. scale, 1.0, 1.0e-12)
+      assert close_to(trace, 0.0, 1.0e-8)
+    }
+    _ -> panic as "expected one huge scaled complex Schur block"
+  }
+  assert_scaled_rotation_eigenvalues(values, scale)
+}
+
+pub fn complex_schur_eigenpairs_accept_tiny_scaled_blocks_test() {
+  let scale = 1.0e-150
+  let assert Ok(block) = matrix.from_rows([[0.0, 0.0 -. scale], [scale, 0.0]])
+  let assert Ok(identity) = matrix.identity(2)
+
+  let assert Ok(values) = eigen.real_schur_eigenvalues(block, 1.0e-160)
+  let assert Ok(pairs) =
+    eigen.real_schur_complex_eigenpairs(identity, block, 1.0e-160)
+
+  assert_scaled_rotation_eigenvalues(values, scale)
+  assert_scaled_rotation_complex_eigenpairs(pairs, scale)
 }
 
 pub fn generalized_eigenvalue_routines_reduce_regular_pencils_test() {
@@ -832,6 +1101,38 @@ pub fn lanczos_builds_symmetric_krylov_relation_test() {
   )
 }
 
+pub fn lanczos_full_dimension_uses_relative_happy_breakdown_test() {
+  let assert Ok(a) =
+    matrix.from_rows([
+      [
+        7.78313055712357,
+        -2.34729553561836,
+        0.715360413911937,
+        -5.58859122658511,
+      ],
+      [-2.34729553561836, 5.06694293140312, 1.3763394219514, 3.10586171553665],
+      [0.715360413911937, 1.3763394219514, 3.26605432001826, -0.256186127653957],
+      [
+        -5.58859122658511,
+        3.10586171553665,
+        -0.256186127653957,
+        7.16616890934777,
+      ],
+    ])
+  let initial = vector.from_list([1.0, 2.0, 3.0, 4.0])
+
+  let assert Ok(result) = krylov.lanczos(a, initial, 4, 1.0e-12)
+  let assert Ok(aq) = matrix.mul(a, result.q)
+  let assert Ok(qt) = matrix.mul(result.q, result.t)
+  let assert Ok(qtq) = matrix.mul(matrix.transpose(result.q), result.q)
+  let assert Ok(identity) = matrix.identity(result.steps)
+
+  assert result.steps == 4
+  assert result.happy_breakdown
+  assert matrix.approx_equal(aq, qt, 1.0e-5)
+  assert matrix.approx_equal(qtq, identity, 1.0e-5)
+}
+
 pub fn gmres_solves_nonsymmetric_system_test() {
   let assert Ok(a) = matrix.from_rows([[4.0, 1.0], [2.0, 3.0]])
   let b = vector.from_list([1.0, 2.0])
@@ -875,6 +1176,43 @@ pub fn bicg_family_solves_nonsymmetric_system_test() {
   assert vector.approx_equal(bicgstab.solution, expected, 1.0e-8)
 }
 
+pub fn bicg_family_uses_relative_breakdown_thresholds_test() {
+  let scale = 1.0e-80
+  let assert Ok(a) =
+    matrix.from_rows([
+      [4.0 *. scale, 1.0 *. scale],
+      [2.0 *. scale, 3.0 *. scale],
+    ])
+  let b = vector.from_list([1.0 *. scale, 2.0 *. scale])
+  let assert Ok(initial) = vector.zeros(2)
+  let expected = vector.from_list([0.1, 0.6])
+
+  let assert Ok(bicg) = krylov.bicg(a, b, initial, 4, 1.0e-88)
+  let assert Ok(bicgstab) = krylov.bicgstab(a, b, initial, 4, 1.0e-88)
+
+  assert bicg.converged
+  assert bicgstab.converged
+  assert vector.approx_equal(bicg.solution, expected, 1.0e-8)
+  assert vector.approx_equal(bicgstab.solution, expected, 1.0e-8)
+}
+
+pub fn bicgstab_accepts_huge_scaled_stabilization_steps_test() {
+  let scale = 1.0e20
+  let assert Ok(a) =
+    matrix.from_rows([
+      [4.0 *. scale, 1.0 *. scale],
+      [2.0 *. scale, 3.0 *. scale],
+    ])
+  let b = vector.from_list([1.0 *. scale, 2.0 *. scale])
+  let assert Ok(initial) = vector.zeros(2)
+  let expected = vector.from_list([0.1, 0.6])
+
+  let assert Ok(bicgstab) = krylov.bicgstab(a, b, initial, 4, 1.0e5)
+
+  assert bicgstab.converged
+  assert vector.approx_equal(bicgstab.solution, expected, 1.0e-8)
+}
+
 pub fn minres_solves_symmetric_indefinite_system_test() {
   let assert Ok(a) = matrix.from_rows([[2.0, 1.0], [1.0, -1.0]])
   let b = vector.from_list([1.0, 0.0])
@@ -886,6 +1224,23 @@ pub fn minres_solves_symmetric_indefinite_system_test() {
   assert minres.converged
   assert minres.iterations <= 2
   assert minres.residual_norm <=. 1.0e-8
+  assert vector.approx_equal(minres.solution, expected, 1.0e-8)
+}
+
+pub fn minres_accepts_tiny_scaled_lanczos_beta_test() {
+  let scale = 1.0e-80
+  let assert Ok(a) =
+    matrix.from_rows([
+      [2.0 *. scale, 1.0 *. scale],
+      [1.0 *. scale, -1.0 *. scale],
+    ])
+  let b = vector.from_list([1.0 *. scale, 0.0])
+  let assert Ok(initial) = vector.zeros(2)
+  let expected = vector.from_list([0.3333333333333333, 0.3333333333333333])
+
+  let assert Ok(minres) = krylov.minres(a, b, initial, 4, 1.0e-88)
+
+  assert minres.converged
   assert vector.approx_equal(minres.solution, expected, 1.0e-8)
 }
 
@@ -938,6 +1293,24 @@ fn assert_rotation_eigenvalues(values: List(eigen.Eigenvalue)) -> Nil {
   }
 }
 
+fn assert_scaled_rotation_eigenvalues(
+  values: List(eigen.Eigenvalue),
+  scale: Float,
+) -> Nil {
+  case values {
+    [
+      eigen.ComplexEigenvalue(real: real_pos, imaginary: imag_pos),
+      eigen.ComplexEigenvalue(real: real_neg, imaginary: imag_neg),
+    ] -> {
+      assert close_to(real_pos, 0.0, 1.0e-8)
+      assert close_to(real_neg, 0.0, 1.0e-8)
+      assert close_to(imag_pos /. scale, 1.0, 1.0e-12)
+      assert close_to(imag_neg /. scale, -1.0, 1.0e-12)
+    }
+    _ -> panic as "expected scaled conjugate complex eigenvalues"
+  }
+}
+
 fn has_real_eigenvalue(values: List(eigen.Eigenvalue), target: Float) -> Bool {
   case values {
     [] -> False
@@ -979,6 +1352,39 @@ fn assert_rotation_complex_eigenpairs(
       assert close_to(negative_norm, 1.0, 1.0e-8)
     }
     _ -> panic as "expected conjugate complex eigenpairs"
+  }
+}
+
+fn assert_scaled_rotation_complex_eigenpairs(
+  pairs: List(eigen.ComplexEigenpair),
+  scale: Float,
+) -> Nil {
+  let scaled_tolerance = scale *. 1.0e-12
+  case pairs {
+    [positive, negative] -> {
+      assert complex.approx_equal(
+        positive.value,
+        complex.new(real: 0.0, imaginary: scale),
+        scaled_tolerance,
+      )
+      assert complex.approx_equal(
+        negative.value,
+        complex.new(real: 0.0, imaginary: 0.0 -. scale),
+        scaled_tolerance,
+      )
+      assert positive.converged
+      assert negative.converged
+      assert positive.residual_norm <=. scaled_tolerance
+      assert negative.residual_norm <=. scaled_tolerance
+      assert complex.vector_dimension(positive.vector) == 2
+      assert complex.vector_dimension(negative.vector) == 2
+
+      let assert Ok(positive_norm) = complex.vector_norm2(positive.vector)
+      let assert Ok(negative_norm) = complex.vector_norm2(negative.vector)
+      assert close_to(positive_norm, 1.0, 1.0e-8)
+      assert close_to(negative_norm, 1.0, 1.0e-8)
+    }
+    _ -> panic as "expected scaled conjugate complex eigenpairs"
   }
 }
 

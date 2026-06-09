@@ -6,6 +6,7 @@ import lumatrix/error.{
   type NlaError, DimensionMismatch, InvalidInput, OutOfBounds,
 }
 import lumatrix/matrix.{type Matrix}
+import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
 /// A sparse matrix entry in zero-based coordinates.
@@ -375,17 +376,17 @@ fn row_value(
 fn row_dot(sparse: SparseMatrix, row: Int, x: Vector) -> Float {
   let start = unsafe_int_at(sparse.row_offsets, row)
   let stop = unsafe_int_at(sparse.row_offsets, row + 1)
-  list.fold(interval(start, stop), 0.0, fn(acc, position) {
+  numerics.compensated_sum_map(interval(start, stop), fn(position) {
     let col = unsafe_int_at(sparse.column_indices, position)
-    acc +. unsafe_float_at(sparse.values, position) *. unsafe_vector_get(x, col)
+    unsafe_float_at(sparse.values, position) *. unsafe_vector_get(x, col)
   })
 }
 
 fn row_abs_sum(sparse: SparseMatrix, row: Int) -> Float {
   let start = unsafe_int_at(sparse.row_offsets, row)
   let stop = unsafe_int_at(sparse.row_offsets, row + 1)
-  list.fold(interval(start, stop), 0.0, fn(acc, position) {
-    acc +. float.absolute_value(unsafe_float_at(sparse.values, position))
+  numerics.compensated_sum_map(interval(start, stop), fn(position) {
+    float.absolute_value(unsafe_float_at(sparse.values, position))
   })
 }
 

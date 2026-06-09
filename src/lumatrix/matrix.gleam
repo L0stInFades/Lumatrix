@@ -4,6 +4,7 @@ import gleam/list
 import lumatrix/error.{
   type NlaError, DimensionMismatch, InvalidInput, NotSquare, OutOfBounds,
 }
+import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
 /// A dense row-major matrix.
@@ -266,8 +267,8 @@ pub fn mul_vec(matrix: Matrix, x: Vector) -> Result(Vector, NlaError) {
       Ok(
         vector.from_list(
           list.map(indices(matrix.rows), fn(i) {
-            list.fold(indices(matrix.cols), 0.0, fn(acc, j) {
-              acc +. unsafe_get(matrix, i, j) *. unsafe_vector_get(x, j)
+            numerics.compensated_sum_map(indices(matrix.cols), fn(j) {
+              unsafe_get(matrix, i, j) *. unsafe_vector_get(x, j)
             })
           }),
         ),
@@ -281,7 +282,24 @@ pub fn transpose_mul_vec(
   matrix: Matrix,
   x: Vector,
 ) -> Result(Vector, NlaError) {
-  mul_vec(transpose(matrix), x)
+  let x_size = vector.dimension(x)
+  case matrix.rows == x_size {
+    False ->
+      Error(DimensionMismatch(
+        expected: int.to_string(matrix.rows),
+        actual: int.to_string(x_size),
+      ))
+    True ->
+      Ok(
+        vector.from_list(
+          list.map(indices(matrix.cols), fn(j) {
+            numerics.compensated_sum_map(indices(matrix.rows), fn(i) {
+              unsafe_get(matrix, i, j) *. unsafe_vector_get(x, i)
+            })
+          }),
+        ),
+      )
+  }
 }
 
 pub fn mul(a: Matrix, b: Matrix) -> Result(Matrix, NlaError) {
@@ -293,8 +311,8 @@ pub fn mul(a: Matrix, b: Matrix) -> Result(Matrix, NlaError) {
       ))
     True ->
       from_fn(rows: a.rows, cols: b.cols, with: fn(i, j) {
-        list.fold(indices(a.cols), 0.0, fn(acc, k) {
-          acc +. unsafe_get(a, i, k) *. unsafe_get(b, k, j)
+        numerics.compensated_sum_map(indices(a.cols), fn(k) {
+          unsafe_get(a, i, k) *. unsafe_get(b, k, j)
         })
       })
   }
@@ -310,8 +328,8 @@ pub fn trace(matrix: Matrix) -> Result(Float, NlaError) {
   case is_square(matrix) {
     True ->
       Ok(
-        list.fold(indices(matrix.rows), 0.0, fn(acc, i) {
-          acc +. unsafe_get(matrix, i, i)
+        numerics.compensated_sum_map(indices(matrix.rows), fn(i) {
+          unsafe_get(matrix, i, i)
         }),
       )
     False -> Error(NotSquare(matrix.rows, matrix.cols))
@@ -321,16 +339,15 @@ pub fn trace(matrix: Matrix) -> Result(Float, NlaError) {
 pub fn norm_inf(matrix: Matrix) -> Float {
   list.fold(indices(matrix.rows), 0.0, fn(best, i) {
     let row_sum =
-      list.fold(indices(matrix.cols), 0.0, fn(acc, j) {
-        acc +. float.absolute_value(unsafe_get(matrix, i, j))
+      numerics.compensated_sum_map(indices(matrix.cols), fn(j) {
+        float.absolute_value(unsafe_get(matrix, i, j))
       })
     float.max(best, row_sum)
   })
 }
 
 pub fn frobenius_norm(matrix: Matrix) -> Result(Float, NlaError) {
-  let sum_squares = list.fold(matrix.data, 0.0, fn(acc, x) { acc +. x *. x })
-  case float.square_root(sum_squares) {
+  case numerics.norm2(matrix.data) {
     Ok(value) -> Ok(value)
     Error(_) -> Error(InvalidInput("cannot take square root of norm"))
   }

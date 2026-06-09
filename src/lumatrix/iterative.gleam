@@ -6,6 +6,7 @@ import lumatrix/error.{
 }
 import lumatrix/error_analysis
 import lumatrix/matrix.{type Matrix}
+import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
 const diagonal_tolerance = 1.0e-12
@@ -422,19 +423,21 @@ fn build_stationary_step(
     True -> Ok(vector.from_list(new_values))
     False -> {
       let diagonal = matrix.unsafe_get(a, i, i)
-      case float.absolute_value(diagonal) <=. diagonal_tolerance {
+      case
+        singular_magnitude(float.absolute_value(diagonal), matrix.norm_inf(a))
+      {
         True -> Error(SingularMatrix(i))
         False -> {
           let sum =
-            list.fold(matrix.indices(matrix.cols(a)), 0.0, fn(acc, j) {
+            numerics.compensated_sum_map(matrix.indices(matrix.cols(a)), fn(j) {
               case j == i {
-                True -> acc
+                True -> 0.0
                 False -> {
                   let xj = case use_new_values && j < i {
                     True -> unsafe_at(new_values, j)
                     False -> unsafe_vector_get(old, j)
                   }
-                  acc +. matrix.unsafe_get(a, i, j) *. xj
+                  matrix.unsafe_get(a, i, j) *. xj
                 }
               }
             })
@@ -494,11 +497,10 @@ fn steepest_loop(
                       case vector.dot(r, ar) {
                         Error(e) -> Error(e)
                         Ok(rar) -> {
-                          case
-                            float.absolute_value(rar) <=. diagonal_tolerance
-                          {
-                            True -> Error(SingularMatrix(iteration))
-                            False ->
+                          case dot_singular(rar, r, ar) {
+                            Error(e) -> Error(e)
+                            Ok(True) -> Error(SingularMatrix(iteration))
+                            Ok(False) ->
                               case vector.axpy(rr /. rar, r, x) {
                                 Error(e) -> Error(e)
                                 Ok(next) ->
@@ -651,9 +653,10 @@ fn cg_next(
           case vector.dot(p, ap) {
             Error(e) -> Error(e)
             Ok(pap) -> {
-              case float.absolute_value(pap) <=. diagonal_tolerance {
-                True -> Error(SingularMatrix(0))
-                False -> {
+              case dot_singular(pap, p, ap) {
+                Error(e) -> Error(e)
+                Ok(True) -> Error(SingularMatrix(0))
+                Ok(False) -> {
                   let alpha = rr /. pap
                   case vector.axpy(alpha, p, x) {
                     Error(e) -> Error(e)
@@ -747,9 +750,10 @@ fn pcg_next(
           case vector.dot(p, ap) {
             Error(e) -> Error(e)
             Ok(pap) -> {
-              case float.absolute_value(pap) <=. diagonal_tolerance {
-                True -> Error(SingularMatrix(0))
-                False -> {
+              case dot_singular(pap, p, ap) {
+                Error(e) -> Error(e)
+                Ok(True) -> Error(SingularMatrix(0))
+                Ok(False) -> {
                   let alpha = rz /. pap
                   case vector.axpy(alpha, p, x) {
                     Error(e) -> Error(e)
@@ -796,7 +800,9 @@ fn build_preconditioned(
     True -> Ok(vector.from_list(values))
     False -> {
       let diagonal = matrix.unsafe_get(a, i, i)
-      case float.absolute_value(diagonal) <=. diagonal_tolerance {
+      case
+        singular_magnitude(float.absolute_value(diagonal), matrix.norm_inf(a))
+      {
         True -> Error(SingularMatrix(i))
         False ->
           build_preconditioned(
@@ -867,6 +873,30 @@ fn unsafe_vector_at(vectors: List(Vector), index: Int) -> Vector {
 
 fn residual_norm(a: Matrix, x: Vector, b: Vector) -> Result(Float, NlaError) {
   error_analysis.residual_norm2(a, x, b)
+}
+
+fn singular_magnitude(magnitude: Float, scale: Float) -> Bool {
+  numerics.relative_near_zero(magnitude, scale, diagonal_tolerance)
+}
+
+fn dot_singular(
+  value: Float,
+  left: Vector,
+  right: Vector,
+) -> Result(Bool, NlaError) {
+  case vector.norm2(left) {
+    Error(e) -> Error(e)
+    Ok(left_norm) ->
+      case vector.norm2(right) {
+        Error(e) -> Error(e)
+        Ok(right_norm) ->
+          Ok(numerics.relative_near_zero(
+            value,
+            left_norm *. right_norm,
+            diagonal_tolerance,
+          ))
+      }
+  }
 }
 
 fn unsafe_vector_get(values: Vector, index: Int) -> Float {

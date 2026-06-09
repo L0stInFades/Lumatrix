@@ -4,6 +4,7 @@ import gleam/list
 import lumatrix/error.{
   type NlaError, DimensionMismatch, InvalidInput, OutOfBounds,
 }
+import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
 pub type Complex {
@@ -58,15 +59,30 @@ pub fn mul(a: Complex, b: Complex) -> Complex {
 }
 
 pub fn div(a: Complex, b: Complex) -> Result(Complex, NlaError) {
-  let denominator = abs_squared(b)
-  case denominator >. 0.0 {
-    False -> Error(InvalidInput("complex division by zero"))
-    True ->
-      Ok(Complex(
-        real: { a.real *. b.real +. a.imaginary *. b.imaginary } /. denominator,
-        imaginary: { a.imaginary *. b.real -. a.real *. b.imaginary }
-          /. denominator,
-      ))
+  let real_magnitude = float.absolute_value(b.real)
+  let imaginary_magnitude = float.absolute_value(b.imaginary)
+  case real_magnitude <=. 0.0 && imaginary_magnitude <=. 0.0 {
+    True -> Error(InvalidInput("complex division by zero"))
+    False -> {
+      case real_magnitude >=. imaginary_magnitude {
+        True -> {
+          let ratio = b.imaginary /. b.real
+          let denominator = b.real +. b.imaginary *. ratio
+          Ok(Complex(
+            real: { a.real +. a.imaginary *. ratio } /. denominator,
+            imaginary: { a.imaginary -. a.real *. ratio } /. denominator,
+          ))
+        }
+        False -> {
+          let ratio = b.real /. b.imaginary
+          let denominator = b.imaginary +. b.real *. ratio
+          Ok(Complex(
+            real: { a.real *. ratio +. a.imaginary } /. denominator,
+            imaginary: { a.imaginary *. ratio -. a.real } /. denominator,
+          ))
+        }
+      }
+    }
   }
 }
 
@@ -79,7 +95,7 @@ pub fn abs_squared(value: Complex) -> Float {
 }
 
 pub fn abs(value: Complex) -> Result(Float, NlaError) {
-  case float.square_root(abs_squared(value)) {
+  case numerics.hypot(value.real, value.imaginary) {
     Ok(magnitude) -> Ok(magnitude)
     Error(_) -> Error(InvalidInput("cannot take square root of complex norm"))
   }
@@ -175,43 +191,16 @@ pub fn vector_dot_conjugate(
         expected: int.to_string(a.size),
         actual: int.to_string(b.size),
       ))
-    True ->
-      Ok(
-        list.fold(list.zip(a.data, with: b.data), zero(), fn(acc, pair) {
-          let #(x, y) = pair
-          add(acc, mul(conjugate(x), y))
-        }),
-      )
+    True -> Ok(complex_dot_conjugate_pairs(list.zip(a.data, with: b.data)))
   }
 }
 
 pub fn vector_norm2(vector: ComplexVector) -> Result(Float, NlaError) {
-  let scale =
-    list.fold(vector.data, 0.0, fn(best, value) {
-      case abs(value) {
-        Ok(magnitude) -> float.max(best, magnitude)
-        Error(_) -> best
-      }
-    })
-  case scale <=. 0.0 {
-    True -> Ok(0.0)
-    False -> {
-      let sum =
-        list.fold(vector.data, 0.0, fn(acc, value) {
-          let scaled_real = value.real /. scale
-          let scaled_imaginary = value.imaginary /. scale
-          acc
-          +. scaled_real
-          *. scaled_real
-          +. scaled_imaginary
-          *. scaled_imaginary
-        })
-      case float.square_root(sum) {
-        Ok(root) -> Ok(scale *. root)
-        Error(_) ->
-          Error(InvalidInput("cannot take square root of vector norm"))
-      }
-    }
+  let values =
+    list.flat_map(vector.data, fn(value) { [value.real, value.imaginary] })
+  case numerics.norm2(values) {
+    Ok(norm) -> Ok(norm)
+    Error(_) -> Error(InvalidInput("cannot take square root of vector norm"))
   }
 }
 
@@ -260,6 +249,19 @@ fn vector_zip_with(
         actual: int.to_string(b.size),
       ))
   }
+}
+
+fn complex_dot_conjugate_pairs(values: List(#(Complex, Complex))) -> Complex {
+  Complex(
+    real: numerics.compensated_sum_map(values, fn(pair) {
+      let #(x, y) = pair
+      x.real *. y.real +. x.imaginary *. y.imaginary
+    }),
+    imaginary: numerics.compensated_sum_map(values, fn(pair) {
+      let #(x, y) = pair
+      x.real *. y.imaginary -. x.imaginary *. y.real
+    }),
+  )
 }
 
 fn at(data: List(a), index: Int) -> Result(a, Nil) {
