@@ -1,0 +1,15 @@
+[pr_reviewer]
+extra_instructions = """
+This is Lumatrix, a pure Gleam numerical linear algebra library.
+Focus on mathematical correctness, dimension checks, numerical stability,
+tolerance handling, convergence behavior, focused algorithm tests, and idiomatic
+Gleam that fits the existing small API style. Keep feedback concise and actionable.
+"""
+require_tests_review = true
+
+[pr_code_suggestions]
+num_code_suggestions = 6
+suggestions_score_threshold = 7
+
+[pr_description]
+publish_labels = false
