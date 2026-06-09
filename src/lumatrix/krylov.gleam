@@ -322,12 +322,13 @@ fn bicg_start(
       case vector.dot(shadow_residual, r0) {
         Error(e) -> Error(e)
         Ok(rho) ->
-          case float.absolute_value(rho) <=. breakdown_tolerance {
-            True ->
+          case dot_breakdown(rho, shadow_residual, r0) {
+            Error(e) -> Error(e)
+            Ok(True) ->
               Error(InvalidInput(
                 "BiCG shadow residual is orthogonal to the residual",
               ))
-            False ->
+            Ok(False) ->
               bicg_loop(
                 a,
                 b,
@@ -407,12 +408,13 @@ fn bicg_step(
           case vector.dot(shadow_p, ap) {
             Error(e) -> Error(e)
             Ok(denominator) ->
-              case float.absolute_value(denominator) <=. breakdown_tolerance {
-                True ->
+              case dot_breakdown(denominator, shadow_p, ap) {
+                Error(e) -> Error(e)
+                Ok(True) ->
                   Error(InvalidInput(
                     "BiCG breakdown: search directions are nearly A-orthogonal",
                   ))
-                False -> {
+                Ok(False) -> {
                   let alpha = rho /. denominator
                   case vector.axpy(alpha, p, x) {
                     Error(e) -> Error(e)
@@ -459,8 +461,9 @@ fn bicg_finish_step(
       case vector.norm2(next_r) {
         Error(e) -> Error(e)
         Ok(r_norm) ->
-          case float.absolute_value(next_rho) <=. breakdown_tolerance {
-            True ->
+          case dot_breakdown(next_rho, next_shadow_r, next_r) {
+            Error(e) -> Error(e)
+            Ok(True) ->
               case r_norm <=. tolerance {
                 True ->
                   Ok(#(
@@ -476,7 +479,7 @@ fn bicg_finish_step(
                     "BiCG breakdown: shadow residual became orthogonal",
                   ))
               }
-            False -> {
+            Ok(False) -> {
               let beta = next_rho /. rho
               case vector.axpy(beta, p, next_r) {
                 Error(e) -> Error(e)
@@ -596,9 +599,11 @@ fn bicgstab_step(
   case vector.dot(shadow_r0, r) {
     Error(e) -> Error(e)
     Ok(rho) ->
-      case float.absolute_value(rho) <=. breakdown_tolerance {
-        True -> Error(InvalidInput("BiCGSTAB breakdown: rho is nearly zero"))
-        False ->
+      case dot_breakdown(rho, shadow_r0, r) {
+        Error(e) -> Error(e)
+        Ok(True) ->
+          Error(InvalidInput("BiCGSTAB breakdown: rho is nearly zero"))
+        Ok(False) ->
           case float.absolute_value(omega) <=. breakdown_tolerance {
             True ->
               Error(InvalidInput("BiCGSTAB breakdown: omega is nearly zero"))
@@ -658,12 +663,13 @@ fn bicgstab_stabilize(
   case vector.dot(shadow_r0, v) {
     Error(e) -> Error(e)
     Ok(denominator) ->
-      case float.absolute_value(denominator) <=. breakdown_tolerance {
-        True ->
+      case dot_breakdown(denominator, shadow_r0, v) {
+        Error(e) -> Error(e)
+        Ok(True) ->
           Error(InvalidInput(
             "BiCGSTAB breakdown: alpha denominator is nearly zero",
           ))
-        False -> {
+        Ok(False) -> {
           let next_alpha = rho /. denominator
           case vector.axpy(0.0 -. next_alpha, v, r) {
             Error(e) -> Error(e)
@@ -729,12 +735,13 @@ fn bicgstab_after_t(
   case vector.dot(t, t) {
     Error(e) -> Error(e)
     Ok(tt) ->
-      case float.absolute_value(tt) <=. breakdown_tolerance {
-        True ->
+      case dot_breakdown(tt, t, t) {
+        Error(e) -> Error(e)
+        Ok(True) ->
           Error(InvalidInput(
             "BiCGSTAB breakdown: stabilizing direction vanished",
           ))
-        False ->
+        Ok(False) ->
           case vector.dot(t, s) {
             Error(e) -> Error(e)
             Ok(ts) -> {
@@ -900,7 +907,7 @@ fn minres_rotate_and_update(
   let next_dbar = 0.0 -. cs *. next_beta
   case numerics.hypot(gbar, next_beta) {
     Error(_) -> Error(InvalidInput("MINRES rotation norm is invalid"))
-    Ok(gamma) if gamma <=. breakdown_tolerance ->
+    Ok(gamma) if gamma <=. 0.0 ->
       finish_solver(a, b, x, iteration, tolerance, True)
     Ok(gamma) -> {
       let next_cs = gbar /. gamma
@@ -1319,6 +1326,26 @@ fn finish_solver(
         converged: r_norm <=. tolerance,
         happy_breakdown: happy_breakdown,
       ))
+  }
+}
+
+fn dot_breakdown(
+  value: Float,
+  left: Vector,
+  right: Vector,
+) -> Result(Bool, NlaError) {
+  case vector.norm2(left) {
+    Error(e) -> Error(e)
+    Ok(left_norm) ->
+      case vector.norm2(right) {
+        Error(e) -> Error(e)
+        Ok(right_norm) ->
+          Ok(numerics.relative_near_zero(
+            value,
+            left_norm *. right_norm,
+            breakdown_tolerance,
+          ))
+      }
   }
 }
 

@@ -124,6 +124,20 @@ pub fn sparse_matrix_canonicalizes_and_multiplies_test() {
   assert close(implicit_zero, 0.0)
 }
 
+pub fn sparse_inner_products_keep_small_terms_test() {
+  let assert Ok(a) =
+    sparse.from_entries(rows: 1, cols: 3, entries: [
+      sparse.Entry(row: 0, col: 0, value: 1.0e16),
+      sparse.Entry(row: 0, col: 1, value: 1.0),
+      sparse.Entry(row: 0, col: 2, value: -1.0e16),
+    ])
+  let ones = vector.from_list([1.0, 1.0, 1.0])
+
+  let assert Ok(product) = sparse.mul_vec(a, ones)
+
+  assert vector.approx_equal(product, vector.from_list([1.0]), 1.0e-8)
+}
+
 pub fn sparse_matrix_dense_conversion_and_errors_test() {
   let assert Ok(dense) =
     matrix.from_rows([[1.0, 1.0e-14], [0.0, -2.0], [3.0, 0.0]])
@@ -468,6 +482,25 @@ pub fn jacobi_gauss_seidel_and_sor_converge_test() {
     -2.0 /. 3.0,
     1.0e-8,
   )
+}
+
+pub fn stationary_methods_accept_tiny_scaled_diagonal_systems_test() {
+  let assert Ok(a) = matrix.from_rows([[1.0e-150, 0.0], [0.0, 2.0e-150]])
+  let b = vector.from_list([1.0e-150, 4.0e-150])
+  let assert Ok(initial) = vector.zeros(2)
+  let expected = vector.from_list([1.0, 2.0])
+
+  let assert Ok(jacobi) = iterative.jacobi(a, b, initial, 4, 1.0e-160)
+  let assert Ok(gauss_seidel) =
+    iterative.gauss_seidel(a, b, initial, 4, 1.0e-160)
+  let assert Ok(sor) = iterative.sor(a, b, initial, 1.0, 4, 1.0e-160)
+
+  assert jacobi.converged
+  assert gauss_seidel.converged
+  assert sor.converged
+  assert vector.approx_equal(jacobi.solution, expected, 1.0e-12)
+  assert vector.approx_equal(gauss_seidel.solution, expected, 1.0e-12)
+  assert vector.approx_equal(sor.solution, expected, 1.0e-12)
 }
 
 pub fn conjugate_gradient_family_converges_test() {
@@ -995,6 +1028,26 @@ pub fn bicg_family_solves_nonsymmetric_system_test() {
   assert bicgstab.residual_norm <=. 1.0e-8
   assert vector.approx_equal(bicg.solution, expected, 1.0e-8)
   assert vector.approx_equal(bicg_shadow.solution, expected, 1.0e-8)
+  assert vector.approx_equal(bicgstab.solution, expected, 1.0e-8)
+}
+
+pub fn bicg_family_uses_relative_breakdown_thresholds_test() {
+  let scale = 1.0e-80
+  let assert Ok(a) =
+    matrix.from_rows([
+      [4.0 *. scale, 1.0 *. scale],
+      [2.0 *. scale, 3.0 *. scale],
+    ])
+  let b = vector.from_list([1.0 *. scale, 2.0 *. scale])
+  let assert Ok(initial) = vector.zeros(2)
+  let expected = vector.from_list([0.1, 0.6])
+
+  let assert Ok(bicg) = krylov.bicg(a, b, initial, 4, 1.0e-88)
+  let assert Ok(bicgstab) = krylov.bicgstab(a, b, initial, 4, 1.0e-88)
+
+  assert bicg.converged
+  assert bicgstab.converged
+  assert vector.approx_equal(bicg.solution, expected, 1.0e-8)
   assert vector.approx_equal(bicgstab.solution, expected, 1.0e-8)
 }
 
