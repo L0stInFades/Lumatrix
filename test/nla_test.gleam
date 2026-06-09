@@ -45,6 +45,19 @@ pub fn lu_reconstructs_permuted_matrix_test() {
   assert matrix.approx_equal(pa, lu, tolerance)
 }
 
+pub fn cholesky_factor_and_solve_spd_test() {
+  let assert Ok(a) = matrix.from_rows([[4.0, 2.0], [2.0, 3.0]])
+  let b = vector.from_list([6.0, 5.0])
+
+  let assert Ok(factors) = direct.cholesky_factor(a)
+  let assert Ok(reconstructed) =
+    matrix.mul(factors.l, matrix.transpose(factors.l))
+  let assert Ok(x) = direct.solve_spd(a, b)
+
+  assert matrix.approx_equal(reconstructed, a, tolerance)
+  assert vector.approx_equal(x, vector.from_list([1.0, 1.0]), tolerance)
+}
+
 pub fn householder_maps_vector_to_positive_axis_test() {
   let x = vector.from_list([2.0, 1.0])
   let assert Ok(#(h, a)) = orthogonal.householder_matrix(x)

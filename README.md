@@ -9,7 +9,7 @@ algorithms and readable implementations.
 Current modules:
 
 - `nla/vector` and `nla/matrix`: dynamic-size dense vectors and row-major matrices.
-- `nla/direct`: Gauss transforms, Gaussian elimination, LU with partial pivoting, triangular solves, determinant and inverse.
+- `nla/direct`: Gauss transforms, Gaussian elimination, LU with partial pivoting, Cholesky factorization for SPD systems, triangular solves, determinant and inverse.
 - `nla/orthogonal`: Householder transformations, Givens rotations, Householder QR, Givens QR, classical Gram-Schmidt QR and modified Gram-Schmidt QR.
 - `nla/error_analysis`: residuals, iterative refinement, backward/forward error helpers and infinity-norm condition estimates.
 - `nla/least_squares`: normal equations, Householder QR, classical Gram-Schmidt QR, modified Gram-Schmidt QR and stability diagnostics for least-squares solvers.

@@ -13,6 +13,10 @@ pub type LU {
   LU(l: Matrix, u: Matrix, p: Matrix, swaps: Int)
 }
 
+pub type Cholesky {
+  Cholesky(l: Matrix)
+}
+
 pub fn gauss_transform(
   matrix a: Matrix,
   pivot k: Int,
@@ -54,6 +58,20 @@ pub fn lu_factor(matrix a: Matrix) -> Result(LU, NlaError) {
   }
 }
 
+pub fn cholesky_factor(matrix a: Matrix) -> Result(Cholesky, NlaError) {
+  case matrix.is_square(a) {
+    False -> Error(NotSquare(a.rows, a.cols))
+    True ->
+      case is_symmetric(a, pivot_tolerance) {
+        False -> Error(InvalidInput("matrix must be symmetric"))
+        True -> {
+          let assert Ok(l) = matrix.zeros(rows: a.rows, cols: a.cols)
+          cholesky_loop(a, l, 0, 0)
+        }
+      }
+  }
+}
+
 pub fn solve(a: Matrix, b: Vector) -> Result(Vector, NlaError) {
   case lu_factor(a) {
     Ok(factors) -> lu_solve(factors, b)
@@ -63,6 +81,31 @@ pub fn solve(a: Matrix, b: Vector) -> Result(Vector, NlaError) {
 
 pub fn gaussian_elimination(a: Matrix, b: Vector) -> Result(Vector, NlaError) {
   solve(a, b)
+}
+
+pub fn solve_spd(a: Matrix, b: Vector) -> Result(Vector, NlaError) {
+  case cholesky_factor(a) {
+    Error(e) -> Error(e)
+    Ok(factors) -> cholesky_solve(factors, b)
+  }
+}
+
+pub fn cholesky_solve(
+  factors: Cholesky,
+  b: Vector,
+) -> Result(Vector, NlaError) {
+  case factors.l.rows == b.size {
+    False ->
+      Error(DimensionMismatch(
+        expected: int.to_string(factors.l.rows),
+        actual: int.to_string(b.size),
+      ))
+    True ->
+      case forward_substitution(factors.l, b) {
+        Error(e) -> Error(e)
+        Ok(y) -> back_substitution(matrix.transpose(factors.l), y)
+      }
+  }
 }
 
 pub fn lu_solve(factors: LU, b: Vector) -> Result(Vector, NlaError) {
@@ -132,6 +175,72 @@ pub fn inverse(a: Matrix) -> Result(Matrix, NlaError) {
         Ok(factors) -> inverse_columns(factors, 0, a.rows, [])
       }
     }
+  }
+}
+
+fn cholesky_loop(
+  a: Matrix,
+  l: Matrix,
+  i: Int,
+  j: Int,
+) -> Result(Cholesky, NlaError) {
+  case i >= a.rows {
+    True -> Ok(Cholesky(l: l))
+    False ->
+      case j > i {
+        True -> cholesky_loop(a, l, i + 1, 0)
+        False -> cholesky_entry(a, l, i, j)
+      }
+  }
+}
+
+fn cholesky_entry(
+  a: Matrix,
+  l: Matrix,
+  i: Int,
+  j: Int,
+) -> Result(Cholesky, NlaError) {
+  let sum = cholesky_dot(l, i, j, 0, 0.0)
+  case i == j {
+    True -> {
+      let value = matrix.unsafe_get(a, i, i) -. sum
+      case value <=. pivot_tolerance {
+        True -> Error(SingularMatrix(i))
+        False ->
+          case float.square_root(value) {
+            Error(_) -> Error(SingularMatrix(i))
+            Ok(root) -> {
+              let assert Ok(next_l) = matrix.set(l, i, j, root)
+              cholesky_loop(a, next_l, i, j + 1)
+            }
+          }
+      }
+    }
+    False -> {
+      let diagonal = matrix.unsafe_get(l, j, j)
+      case float.absolute_value(diagonal) <=. pivot_tolerance {
+        True -> Error(SingularMatrix(j))
+        False -> {
+          let value = { matrix.unsafe_get(a, i, j) -. sum } /. diagonal
+          let assert Ok(next_l) = matrix.set(l, i, j, value)
+          cholesky_loop(a, next_l, i, j + 1)
+        }
+      }
+    }
+  }
+}
+
+fn cholesky_dot(l: Matrix, i: Int, j: Int, k: Int, sum: Float) -> Float {
+  case k >= j {
+    True -> sum
+    False ->
+      cholesky_dot(
+        l,
+        i,
+        j,
+        k + 1,
+        sum +. matrix.unsafe_get(l, i, k) *. matrix.unsafe_get(l, j, k),
+      )
   }
 }
 
@@ -221,6 +330,17 @@ fn swap_l_prefix(l: Matrix, a: Int, b: Int, width: Int) -> Matrix {
       }
     })
   result
+}
+
+fn is_symmetric(a: Matrix, tolerance: Float) -> Bool {
+  list.all(matrix.indices(a.rows), satisfying: fn(i) {
+    list.all(matrix.indices(i), satisfying: fn(j) {
+      float.absolute_value(
+        matrix.unsafe_get(a, i, j) -. matrix.unsafe_get(a, j, i),
+      )
+      <=. tolerance
+    })
+  })
 }
 
 fn forward_loop(
