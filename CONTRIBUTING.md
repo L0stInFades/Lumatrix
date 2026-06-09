@@ -1,6 +1,6 @@
 # Contributing
 
-`lumatrix` is intended to keep numerical linear algebra algorithms explicit and easy
+Lumatrix is intended to keep numerical linear algebra algorithms explicit and easy
 to inspect. Contributions should prefer readable textbook implementations over
 low-level performance tricks.
 

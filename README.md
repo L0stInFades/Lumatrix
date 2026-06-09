@@ -1,9 +1,9 @@
-# lumatrix
+# Lumatrix
 
-[![CI](https://github.com/L0stInFades/lumatrix/actions/workflows/ci.yml/badge.svg)](https://github.com/L0stInFades/lumatrix/actions/workflows/ci.yml)
+[![CI](https://github.com/L0stInFades/Lumatrix/actions/workflows/ci.yml/badge.svg)](https://github.com/L0stInFades/Lumatrix/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-`lumatrix` is a pure Gleam numerical linear algebra package aimed at textbook-style
+Lumatrix is a pure Gleam numerical linear algebra package aimed at textbook-style
 algorithms and readable implementations.
 
 It is designed for learning, testing, and reference implementations rather than

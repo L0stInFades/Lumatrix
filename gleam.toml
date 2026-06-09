@@ -3,8 +3,8 @@ version = "1.0.0"
 description = "Educational numerical linear algebra routines in pure Gleam"
 licences = ["Apache-2.0"]
 
-repository = { type = "github", user = "L0stInFades", repo = "lumatrix" }
-links = [{ title = "GitHub", href = "https://github.com/L0stInFades/lumatrix" }]
+repository = { type = "github", user = "L0stInFades", repo = "Lumatrix" }
+links = [{ title = "GitHub", href = "https://github.com/L0stInFades/Lumatrix" }]
 
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
