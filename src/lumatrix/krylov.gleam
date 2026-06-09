@@ -5,6 +5,7 @@ import lumatrix/error.{type NlaError, DimensionMismatch, InvalidInput, NotSquare
 import lumatrix/error_analysis
 import lumatrix/least_squares
 import lumatrix/matrix.{type Matrix}
+import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
 const breakdown_tolerance = 1.0e-12
@@ -897,7 +898,7 @@ fn minres_rotate_and_update(
   let gbar = sn *. dbar -. cs *. alpha
   let next_epsln = sn *. next_beta
   let next_dbar = 0.0 -. cs *. next_beta
-  case float.square_root(gbar *. gbar +. next_beta *. next_beta) {
+  case numerics.hypot(gbar, next_beta) {
     Error(_) -> Error(InvalidInput("MINRES rotation norm is invalid"))
     Ok(gamma) if gamma <=. breakdown_tolerance ->
       finish_solver(a, b, x, iteration, tolerance, True)

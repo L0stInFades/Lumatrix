@@ -196,6 +196,26 @@ pub fn complex_number_and_vector_operations_test() {
   assert complex.vector_dimension(axpy) == 2
 }
 
+pub fn complex_norms_and_division_scale_extreme_values_test() {
+  let huge = complex.new(real: 1.0e200, imaginary: -1.0e200)
+  let divisor = complex.new(real: 1.0e200, imaginary: 1.0e200)
+  let vector =
+    complex.vector_from_list([huge, complex.new(real: -1.0e200, imaginary: 0.0)])
+  let assert Ok(magnitude) = complex.abs(huge)
+  let assert Ok(quotient) = complex.div(huge, divisor)
+  let assert Ok(vector_norm) = complex.vector_norm2(vector)
+  let assert Ok(root_two) = float.square_root(2.0)
+  let assert Ok(root_three) = float.square_root(3.0)
+
+  assert close_to(magnitude /. 1.0e200, root_two, 1.0e-12)
+  assert complex.approx_equal(
+    quotient,
+    complex.new(real: 0.0, imaginary: -1.0),
+    1.0e-12,
+  )
+  assert close_to(vector_norm /. 1.0e200, root_three, 1.0e-12)
+}
+
 pub fn lu_solve_with_partial_pivoting_test() {
   let assert Ok(a) = matrix.from_rows([[0.0, 2.0], [1.0, 1.0]])
   let b = vector.from_list([4.0, 3.0])
@@ -637,6 +657,17 @@ pub fn svd_reconstructs_matrix_and_spectrum_test() {
   assert close_to(norm2, expected_largest, 1.0e-8)
 }
 
+pub fn svd_handles_extreme_column_scales_test() {
+  let assert Ok(a) = matrix.from_rows([[1.0e150, 0.0], [0.0, 1.0e-150]])
+
+  let assert Ok(result) = svd.decompose(a)
+  let assert [largest, smallest] = vector.to_list(result.singular_values)
+
+  assert result.converged
+  assert close_to(largest /. 1.0e150, 1.0, 1.0e-12)
+  assert close_to(smallest /. 1.0e-150, 1.0, 1.0e-12)
+}
+
 pub fn svd_pseudoinverse_handles_rank_deficiency_test() {
   let assert Ok(a) = matrix.from_rows([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]])
   let b = vector.from_list([1.0, 2.0, 3.0])
@@ -772,6 +803,14 @@ pub fn shifted_qr_variants_converge_test() {
   assert close_to(matrix.unsafe_get(symmetric.t, 1, 1), 1.0, 1.0e-6)
   assert close_to(matrix.unsafe_get(implicit.t, 1, 1), 1.0, 1.0e-6)
   assert close_to(matrix.unsafe_get(double_shift.t, 1, 1), 1.0, 1.0e-6)
+}
+
+pub fn wilkinson_shift_uses_scaled_hypotenuse_test() {
+  let assert Ok(a) = matrix.from_rows([[2.0e200, 1.0e200], [1.0e200, 1.0e200]])
+
+  let shift = eigen.wilkinson_shift(a)
+
+  assert close_to(shift /. 1.0e200, 0.3819660112501051, 1.0e-12)
 }
 
 pub fn symmetric_qr_rejects_nonsymmetric_matrix_test() {

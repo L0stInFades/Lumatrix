@@ -8,6 +8,7 @@ import lumatrix/error.{
   ZeroNorm,
 }
 import lumatrix/matrix.{type Matrix}
+import lumatrix/numerics
 import lumatrix/orthogonal
 import lumatrix/vector.{type Vector}
 
@@ -286,13 +287,13 @@ pub fn wilkinson_shift(a: Matrix) -> Float {
       let a11 = matrix.unsafe_get(a, n - 1, n - 1)
       let delta = { a00 -. a11 } /. 2.0
       let scale = float.absolute_value(delta)
-      case float.square_root(delta *. delta +. a01 *. a01) {
+      case numerics.hypot(delta, a01) {
         Error(_) -> a11
         Ok(denominator_root) -> {
           let denominator = scale +. denominator_root
           case denominator <=. small {
             True -> a11
-            False -> a11 -. sign(delta) *. a01 *. a01 /. denominator
+            False -> a11 -. sign(delta) *. a01 *. { a01 /. denominator }
           }
         }
       }
@@ -552,7 +553,7 @@ fn jacobi_loop(
           let aqq = matrix.unsafe_get(a, q, q)
           let tau = { aqq -. app } /. { 2.0 *. apq }
           let t = jacobi_t(tau)
-          let c = reciprocal_square_root(1.0 +. t *. t)
+          let c = reciprocal_hypot(1.0, t)
           let s = t *. c
           let next_a = apply_jacobi_similarity(a, p, q, c, s, t)
           let next_v = apply_jacobi_to_eigenvectors(eigenvectors, p, q, c, s)
@@ -1133,10 +1134,11 @@ fn validate_symmetric(a: Matrix, tolerance: Float) -> Result(Nil, NlaError) {
 fn is_symmetric(a: Matrix, tolerance: Float) -> Bool {
   list.all(matrix.indices(matrix.rows(a)), satisfying: fn(i) {
     list.all(matrix.indices(matrix.cols(a)), satisfying: fn(j) {
-      float.absolute_value(
-        matrix.unsafe_get(a, i, j) -. matrix.unsafe_get(a, j, i),
+      numerics.relative_close(
+        matrix.unsafe_get(a, i, j),
+        matrix.unsafe_get(a, j, i),
+        tolerance,
       )
-      <=. tolerance
     })
   })
 }
@@ -1167,25 +1169,10 @@ fn diagonal_vector(a: Matrix) -> Vector {
 }
 
 fn jacobi_t(tau: Float) -> Float {
-  let denominator =
-    float.absolute_value(tau) +. square_root_or_one(1.0 +. tau *. tau)
+  let denominator = float.absolute_value(tau) +. hypot_or_one(1.0, tau)
   case denominator <=. small {
     True -> 1.0
     False -> sign(tau) /. denominator
-  }
-}
-
-fn reciprocal_square_root(value: Float) -> Float {
-  case float.square_root(value) {
-    Ok(root) if root >. small -> 1.0 /. root
-    _ -> 0.0
-  }
-}
-
-fn square_root_or_one(value: Float) -> Float {
-  case float.square_root(value) {
-    Ok(root) -> root
-    Error(_) -> 1.0
   }
 }
 
@@ -1224,11 +1211,11 @@ fn sign(value: Float) -> Float {
 }
 
 fn lower_off_diagonal_norm(a: Matrix) -> Float {
-  list.fold(matrix.indices(matrix.rows(a)), 0.0, fn(acc, i) {
-    list.fold(matrix.indices(matrix.cols(a)), acc, fn(inner, j) {
+  numerics.compensated_sum_map(matrix.indices(matrix.rows(a)), fn(i) {
+    numerics.compensated_sum_map(matrix.indices(matrix.cols(a)), fn(j) {
       case i > j {
-        True -> inner +. float.absolute_value(matrix.unsafe_get(a, i, j))
-        False -> inner
+        True -> float.absolute_value(matrix.unsafe_get(a, i, j))
+        False -> 0.0
       }
     })
   })
@@ -1240,11 +1227,11 @@ fn quasi_lower_off_diagonal_norm(a: Matrix, tolerance: Float) -> Float {
 }
 
 fn lower_beyond_first_subdiagonal_norm(a: Matrix) -> Float {
-  list.fold(matrix.indices(matrix.rows(a)), 0.0, fn(acc, i) {
-    list.fold(matrix.indices(matrix.cols(a)), acc, fn(inner, j) {
+  numerics.compensated_sum_map(matrix.indices(matrix.rows(a)), fn(i) {
+    numerics.compensated_sum_map(matrix.indices(matrix.cols(a)), fn(j) {
       case i > j + 1 {
-        True -> inner +. float.absolute_value(matrix.unsafe_get(a, i, j))
-        False -> inner
+        True -> float.absolute_value(matrix.unsafe_get(a, i, j))
+        False -> 0.0
       }
     })
   })
@@ -1710,9 +1697,11 @@ fn safe_complex_div(
   numerator: complex.Complex,
   denominator: complex.Complex,
 ) -> Result(complex.Complex, NlaError) {
-  case complex.abs_squared(denominator) <=. small *. small {
-    True -> Error(InvalidInput("ill-conditioned complex Schur solve"))
-    False -> complex.div(numerator, denominator)
+  case complex.abs(denominator) {
+    Error(e) -> Error(e)
+    Ok(magnitude) if magnitude <=. small ->
+      Error(InvalidInput("ill-conditioned complex Schur solve"))
+    Ok(_) -> complex.div(numerator, denominator)
   }
 }
 
@@ -1870,6 +1859,20 @@ fn square_root_or_zero(value: Float) -> Float {
   case float.square_root(value) {
     Ok(root) -> root
     Error(_) -> 0.0
+  }
+}
+
+fn hypot_or_one(a: Float, b: Float) -> Float {
+  case numerics.hypot(a, b) {
+    Ok(value) -> value
+    Error(_) -> 1.0
+  }
+}
+
+fn reciprocal_hypot(a: Float, b: Float) -> Float {
+  case numerics.hypot(a, b) {
+    Ok(value) if value >. small -> 1.0 /. value
+    _ -> 0.0
   }
 }
 

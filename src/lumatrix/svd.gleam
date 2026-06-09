@@ -6,6 +6,7 @@ import lumatrix/error.{
   type NlaError, DimensionMismatch, InvalidInput, NoConvergence,
 }
 import lumatrix/matrix.{type Matrix}
+import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
 const default_max_sweeps = 80
@@ -363,14 +364,13 @@ fn rotate_pair_if_needed(
 
 fn jacobi_rotation(alpha: Float, beta: Float, gamma: Float) -> #(Float, Float) {
   let tau = { beta -. alpha } /. { 2.0 *. gamma }
-  let t = case float.absolute_value(tau) >. 1.0e150 {
-    True -> 0.5 /. tau
-    False -> {
-      let assert Ok(root) = float.square_root(1.0 +. tau *. tau)
-      sign(tau) /. { float.absolute_value(tau) +. root }
-    }
+  let root = hypot_or_one(1.0, tau)
+  let denominator = float.absolute_value(tau) +. root
+  let t = case denominator <=. 0.0 {
+    True -> 0.0
+    False -> sign(tau) /. denominator
   }
-  let assert Ok(c) = float.square_root(1.0 /. { 1.0 +. t *. t })
+  let c = reciprocal_hypot(1.0, t)
   #(c, c *. t)
 }
 
@@ -524,6 +524,16 @@ fn orthogonalize(
   column: Vector,
   used_reversed: List(Vector),
 ) -> Result(Vector, NlaError) {
+  case orthogonalize_once(column, used_reversed) {
+    Error(e) -> Error(e)
+    Ok(first_pass) -> orthogonalize_once(first_pass, used_reversed)
+  }
+}
+
+fn orthogonalize_once(
+  column: Vector,
+  used_reversed: List(Vector),
+) -> Result(Vector, NlaError) {
   list.try_fold(over: used_reversed, from: column, with: fn(acc, q) {
     case vector.dot(acc, q) {
       Error(e) -> Error(e)
@@ -579,40 +589,31 @@ fn pair_stats(work: Matrix, p: Int, q: Int) -> PairStats {
     })
   case scale <=. 0.0 {
     True -> PairStats(alpha: 0.0, beta: 0.0, gamma: 0.0)
-    False ->
-      list.fold(
-        matrix.indices(matrix.rows(work)),
-        PairStats(alpha: 0.0, beta: 0.0, gamma: 0.0),
-        fn(stats, i) {
+    False -> {
+      let rows = matrix.indices(matrix.rows(work))
+      PairStats(
+        alpha: numerics.compensated_sum_map(rows, fn(i) {
+          let x = matrix.unsafe_get(work, i, p) /. scale
+          x *. x
+        }),
+        beta: numerics.compensated_sum_map(rows, fn(i) {
+          let y = matrix.unsafe_get(work, i, q) /. scale
+          y *. y
+        }),
+        gamma: numerics.compensated_sum_map(rows, fn(i) {
           let x = matrix.unsafe_get(work, i, p) /. scale
           let y = matrix.unsafe_get(work, i, q) /. scale
-          PairStats(
-            alpha: stats.alpha +. x *. x,
-            beta: stats.beta +. y *. y,
-            gamma: stats.gamma +. x *. y,
-          )
-        },
+          x *. y
+        }),
       )
+    }
   }
 }
 
 fn stable_norm(column: Vector) -> Float {
-  let values = vector.to_list(column)
-  let scale =
-    list.fold(values, 0.0, fn(best, value) {
-      float.max(best, float.absolute_value(value))
-    })
-  case scale <=. 0.0 {
-    True -> 0.0
-    False -> {
-      let sum =
-        list.fold(values, 0.0, fn(acc, value) {
-          let scaled = value /. scale
-          acc +. scaled *. scaled
-        })
-      let assert Ok(root) = float.square_root(sum)
-      scale *. root
-    }
+  case numerics.norm2(vector.to_list(column)) {
+    Ok(value) -> value
+    Error(_) -> 0.0
   }
 }
 
@@ -673,6 +674,20 @@ fn sign(value: Float) -> Float {
   case value <. 0.0 {
     True -> -1.0
     False -> 1.0
+  }
+}
+
+fn hypot_or_one(a: Float, b: Float) -> Float {
+  case numerics.hypot(a, b) {
+    Ok(value) -> value
+    Error(_) -> 1.0
+  }
+}
+
+fn reciprocal_hypot(a: Float, b: Float) -> Float {
+  case numerics.hypot(a, b) {
+    Ok(value) if value >. 0.0 -> 1.0 /. value
+    _ -> 0.0
   }
 }
 
