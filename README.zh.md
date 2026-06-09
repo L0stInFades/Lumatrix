@@ -1,22 +1,22 @@
 # Lumatrix
 
 [![CI](https://github.com/L0stInFades/Lumatrix/actions/workflows/ci.yml/badge.svg)](https://github.com/L0stInFades/Lumatrix/actions/workflows/ci.yml)
-[![Release](https://github.com/L0stInFades/Lumatrix/actions/workflows/release.yml/badge.svg)](https://github.com/L0stInFades/Lumatrix/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 English: [README.md](README.md)
 
-Lumatrix 是一个纯 Gleam 编写的数值线性代数库。它希望把经典算法保留在接近
-教材的形状里，让人可以读、可以检查，也可以温和地继续扩展。
+Lumatrix 是一个纯 Gleam 编写的数值线性代数库。它关注小而可检查的数值内核、
+受控的数据形状、带残差语义的 API，以及尽可能稳定的默认算法。
 
-它不打算替代 BLAS 或 LAPACK。它更关心另一件事：清楚的教材式实现、稳定的 API
-边界，以及一个适合学习、测试和轻量数值计算的 Gleam 工具箱。
+它不打算替代 BLAS 或 LAPACK。它更像一个 Gleam 原生的数值层：容易审阅，
+容易扩展，也足够支撑 Gleam 应用和工具里的轻量数值计算。
 
 ## 它提供什么
 
 - 稠密坐标向量与行主序矩阵，构造时检查数据，内部结构对外隐藏。
 - 直接法、正交变换、最小二乘、迭代法、Krylov 方法、特征值算法和基础误差分析。
-- 小而清楚的实现，便于阅读、推导、验证和继续改进。
+- 偏稳定性的构件：带主元的直接法、Householder / Givens QR 路径、残差诊断、
+  迭代改进，以及会显式处理 breakdown 的 Krylov 求解器。
 
 ## API 约定
 
@@ -49,7 +49,8 @@ QR 分解结果会带有 `form` 标签。Householder QR 和 Givens QR 返回 `Fu
 - `lumatrix/error_analysis`：残差、迭代改进、误差界和无穷范数条件数估计。
 - `lumatrix/iterative`：Jacobi、Gauss-Seidel、SOR、最速下降、共轭梯度和预条件
   共轭梯度。
-- `lumatrix/krylov`：Arnoldi、Lanczos、GMRES 和重启 GMRES。
+- `lumatrix/krylov`：Arnoldi、Lanczos、GMRES、重启 GMRES、BiCG、BiCGSTAB 和
+  MINRES。
 - `lumatrix/eigen`：幂法、Hessenberg 与三对角化、Jacobi 特征值迭代、QR 迭代、
   Schur 块工具和对称特征分解。
 
@@ -77,26 +78,17 @@ gleam test
 gleam docs build
 ```
 
-## CI/CD
+## 质量检查
 
-CI workflow 会在 push、pull request 和手动触发时运行。它会下载依赖、检查格式、
-运行测试，并构建生成文档。
-
-Release workflow 可以通过 `vX.Y.Z` tag 触发，也可以手动触发。它会校验发布版本
-是否和 `gleam.toml` 一致，并重新运行 CI 同级别的检查。
-
-```sh
-git tag v1.0.0
-git push origin v1.0.0
-```
+本地和 CI 使用同一组核心检查：格式、测试和生成文档。数值例程应暴露收敛状态
+和残差质量，不把失败隐藏在未经检查的返回值里。
 
 ## 仓库组织
 
 - `src/lumatrix/*.gleam`：库代码。
 - `test/lumatrix_test.gleam`：单元测试和算法行为测试。
 - `gleam.toml` 和 `manifest.toml`：包元数据和锁文件。
-- `.github/workflows/ci.yml`：CI 中的格式、测试和文档检查。
-- `.github/workflows/release.yml`：通过 release tag 或手动触发做发布前检查。
+- `.github/workflows/*.yml`：仓库自动化检查。
 
 ## 许可证
 

@@ -1,18 +1,17 @@
 # Lumatrix
 
 [![CI](https://github.com/L0stInFades/Lumatrix/actions/workflows/ci.yml/badge.svg)](https://github.com/L0stInFades/Lumatrix/actions/workflows/ci.yml)
-[![Release](https://github.com/L0stInFades/Lumatrix/actions/workflows/release.yml/badge.svg)](https://github.com/L0stInFades/Lumatrix/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 中文文档: [README.zh.md](README.zh.md)
 
-Lumatrix is a pure Gleam numerical linear algebra library for people who want
-the algorithms to stay close to the mathematics on the page, so they can be
-read, checked, and gently extended.
+Lumatrix is a pure Gleam numerical linear algebra library focused on small,
+inspectable numerical kernels, checked data shapes, residual-aware APIs, and
+stable default algorithms.
 
-It is not trying to replace BLAS or LAPACK. Its center of gravity is different:
-clear textbook-style routines, careful API boundaries, and a small surface that
-is comfortable for learning, testing, and lightweight numerical work in Gleam.
+It is not trying to replace BLAS or LAPACK. Its center of gravity is a
+Gleam-native layer that is easy to audit, gentle to extend, and dependable
+enough for lightweight numerical work inside Gleam applications and tools.
 
 ## What It Offers
 
@@ -20,8 +19,9 @@ is comfortable for learning, testing, and lightweight numerical work in Gleam.
   internals.
 - Direct solvers, orthogonal transformations, least-squares solvers, iterative
   methods, Krylov methods, eigenvalue routines, and basic error analysis.
-- Small implementations that are meant to be inspected, reasoned about, and
-  improved without hiding the mathematics.
+- Stability-oriented building blocks: pivoted direct solvers, Householder and
+  Givens QR paths, residual diagnostics, refinement tools, and Krylov solvers
+  with explicit breakdown handling.
 
 ## API Notes
 
@@ -59,7 +59,8 @@ and normal-equation residuals live in `least_squares.stability_diagnostics`.
   infinity-norm condition estimates.
 - `lumatrix/iterative`: Jacobi, Gauss-Seidel, SOR, steepest descent, CG, and
   preconditioned CG variants.
-- `lumatrix/krylov`: Arnoldi, Lanczos, GMRES, and restarted GMRES.
+- `lumatrix/krylov`: Arnoldi, Lanczos, GMRES, restarted GMRES, BiCG, BiCGSTAB,
+  and MINRES.
 - `lumatrix/eigen`: power methods, Hessenberg and tridiagonal reductions,
   Jacobi eigen iteration, QR iterations, Schur block helpers, and symmetric
   eigendecomposition.
@@ -88,29 +89,18 @@ gleam test
 gleam docs build
 ```
 
-## CI/CD
+## Quality Checks
 
-The CI workflow runs on pushes, pull requests, and manual dispatch. It downloads
-dependencies, checks formatting, runs the test suite, and builds the generated
-documentation.
-
-The release workflow can run from either a `vX.Y.Z` tag or a manual dispatch. It
-validates that the release version matches `gleam.toml` and reruns the same
-checks as CI.
-
-```sh
-git tag v1.0.0
-git push origin v1.0.0
-```
+The local and CI checks use the same core loop: formatting, tests, and generated
+documentation. Numerical routines are expected to expose convergence state and
+residual quality rather than hiding failure behind unchecked values.
 
 ## Repository Layout
 
 - `src/lumatrix/*.gleam`: library modules.
 - `test/lumatrix_test.gleam`: unit and algorithm behavior tests.
 - `gleam.toml` and `manifest.toml`: package metadata and lockfile.
-- `.github/workflows/ci.yml`: formatting, test, and docs checks.
-- `.github/workflows/release.yml`: release-readiness checks on release tags or
-  manual dispatch.
+- `.github/workflows/*.yml`: repository automation for checks.
 
 ## License
 

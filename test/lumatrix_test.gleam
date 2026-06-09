@@ -611,6 +611,43 @@ pub fn gmres_solves_nonsymmetric_system_test() {
   assert vector.approx_equal(restarted.solution, expected, 1.0e-8)
 }
 
+pub fn bicg_family_solves_nonsymmetric_system_test() {
+  let assert Ok(a) = matrix.from_rows([[4.0, 1.0], [2.0, 3.0]])
+  let b = vector.from_list([1.0, 2.0])
+  let assert Ok(initial) = vector.zeros(2)
+  let shadow = vector.from_list([1.0, 2.0])
+  let expected = vector.from_list([0.1, 0.6])
+
+  let assert Ok(bicg) = krylov.bicg(a, b, initial, 4, 1.0e-10)
+  let assert Ok(bicg_shadow) =
+    krylov.bicg_with_shadow(a, b, initial, shadow, 4, 1.0e-10)
+  let assert Ok(bicgstab) = krylov.bicgstab(a, b, initial, 4, 1.0e-10)
+
+  assert bicg.converged
+  assert bicg_shadow.converged
+  assert bicgstab.converged
+  assert bicg.residual_norm <=. 1.0e-8
+  assert bicg_shadow.residual_norm <=. 1.0e-8
+  assert bicgstab.residual_norm <=. 1.0e-8
+  assert vector.approx_equal(bicg.solution, expected, 1.0e-8)
+  assert vector.approx_equal(bicg_shadow.solution, expected, 1.0e-8)
+  assert vector.approx_equal(bicgstab.solution, expected, 1.0e-8)
+}
+
+pub fn minres_solves_symmetric_indefinite_system_test() {
+  let assert Ok(a) = matrix.from_rows([[2.0, 1.0], [1.0, -1.0]])
+  let b = vector.from_list([1.0, 0.0])
+  let assert Ok(initial) = vector.zeros(2)
+  let expected = vector.from_list([0.3333333333333333, 0.3333333333333333])
+
+  let assert Ok(minres) = krylov.minres(a, b, initial, 4, 1.0e-10)
+
+  assert minres.converged
+  assert minres.iterations <= 2
+  assert minres.residual_norm <=. 1.0e-8
+  assert vector.approx_equal(minres.solution, expected, 1.0e-8)
+}
+
 fn close(a: Float, b: Float) -> Bool {
   float.absolute_value(a -. b) <=. tolerance
 }

@@ -1,6 +1,6 @@
 name = "lumatrix"
 version = "1.0.0"
-description = "Educational numerical linear algebra routines in pure Gleam"
+description = "Numerically stable linear algebra kernels in pure Gleam"
 licences = ["Apache-2.0"]
 
 repository = { type = "github", user = "L0stInFades", repo = "Lumatrix" }
