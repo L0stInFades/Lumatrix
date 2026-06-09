@@ -18,12 +18,13 @@ jobs:
     steps:
       - name: PR Agent action step
         id: pragent
-        uses: the-pr-agent/pr-agent@main
+        uses: L0stInFades/pr-agent@gemini-high-reasoning
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_AI_STUDIO.GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           config.model: "gemini/gemini-3.1-pro-preview"
-          config.fallback_models: '["gemini/gemini-pro-latest", "gemini/gemini-3.5-flash"]'
+          config.fallback_models: '["gemini/gemini-3.5-flash"]'
+          config.reasoning_effort: "high"
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
           github_action_config.auto_improve: "true"
