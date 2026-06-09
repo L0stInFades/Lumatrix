@@ -1,0 +1,8 @@
+# Gleam build output
+/build/
+
+# Erlang runtime crash dumps
+erl_crash.dump
+
+# macOS
+.DS_Store
