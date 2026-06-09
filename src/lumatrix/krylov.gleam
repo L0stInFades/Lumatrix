@@ -1,11 +1,11 @@
 import gleam/float
 import gleam/int
 import gleam/list
-import nla/error.{type NlaError, DimensionMismatch, InvalidInput, NotSquare}
-import nla/error_analysis
-import nla/least_squares
-import nla/matrix.{type Matrix}
-import nla/vector.{type Vector}
+import lumatrix/error.{type NlaError, DimensionMismatch, InvalidInput, NotSquare}
+import lumatrix/error_analysis
+import lumatrix/least_squares
+import lumatrix/matrix.{type Matrix}
+import lumatrix/vector.{type Vector}
 
 pub type ArnoldiResult {
   ArnoldiResult(q: Matrix, h: Matrix, steps: Int, happy_breakdown: Bool)

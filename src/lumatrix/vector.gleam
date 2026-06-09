@@ -1,7 +1,7 @@
 import gleam/float
 import gleam/int
 import gleam/list
-import nla/error.{
+import lumatrix/error.{
   type NlaError, DimensionMismatch, InvalidInput, OutOfBounds, ZeroNorm,
 }
 

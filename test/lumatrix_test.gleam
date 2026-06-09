@@ -1,14 +1,14 @@
 import gleam/float
 import gleeunit
-import nla/direct
-import nla/eigen
-import nla/error_analysis
-import nla/iterative
-import nla/krylov
-import nla/least_squares
-import nla/matrix
-import nla/orthogonal
-import nla/vector
+import lumatrix/direct
+import lumatrix/eigen
+import lumatrix/error_analysis
+import lumatrix/iterative
+import lumatrix/krylov
+import lumatrix/least_squares
+import lumatrix/matrix
+import lumatrix/orthogonal
+import lumatrix/vector
 
 const tolerance = 1.0e-8
 

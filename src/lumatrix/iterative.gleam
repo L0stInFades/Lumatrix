@@ -1,12 +1,12 @@
 import gleam/float
 import gleam/int
 import gleam/list
-import nla/error.{
+import lumatrix/error.{
   type NlaError, DimensionMismatch, InvalidInput, NotSquare, SingularMatrix,
 }
-import nla/error_analysis
-import nla/matrix.{type Matrix}
-import nla/vector.{type Vector}
+import lumatrix/error_analysis
+import lumatrix/matrix.{type Matrix}
+import lumatrix/vector.{type Vector}
 
 const diagonal_tolerance = 1.0e-12
 

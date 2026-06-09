@@ -1,10 +1,10 @@
 import gleam/float
 import gleam/int
 import gleam/list
-import nla/error.{
+import lumatrix/error.{
   type NlaError, DimensionMismatch, InvalidInput, NotSquare, OutOfBounds,
 }
-import nla/vector.{type Vector, Vector}
+import lumatrix/vector.{type Vector, Vector}
 
 pub type Matrix {
   Matrix(rows: Int, cols: Int, data: List(Float))

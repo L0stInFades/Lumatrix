@@ -1,6 +1,9 @@
 # Gleam build output
 /build/
 
+# Local external stress-test package, kept out of the main repository for now.
+/nla_weird_matrix_tests/
+
 # Erlang runtime crash dumps
 erl_crash.dump
 

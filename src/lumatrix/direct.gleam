@@ -1,11 +1,11 @@
 import gleam/float
 import gleam/int
 import gleam/list
-import nla/error.{
+import lumatrix/error.{
   type NlaError, DimensionMismatch, InvalidInput, NotSquare, SingularMatrix,
 }
-import nla/matrix.{type Matrix}
-import nla/vector.{type Vector}
+import lumatrix/matrix.{type Matrix}
+import lumatrix/vector.{type Vector}
 
 const pivot_tolerance = 1.0e-12
 

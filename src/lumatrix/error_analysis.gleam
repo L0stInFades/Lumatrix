@@ -1,8 +1,8 @@
 import gleam/list
-import nla/direct
-import nla/error.{type NlaError, DimensionMismatch, InvalidInput}
-import nla/matrix.{type Matrix}
-import nla/vector.{type Vector}
+import lumatrix/direct
+import lumatrix/error.{type NlaError, DimensionMismatch, InvalidInput}
+import lumatrix/matrix.{type Matrix}
+import lumatrix/vector.{type Vector}
 
 pub type IterativeRefinementResult {
   IterativeRefinementResult(

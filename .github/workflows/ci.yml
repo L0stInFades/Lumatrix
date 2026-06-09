@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gleam:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Erlang
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          gleam-version: "1.17.0"
+
+      - name: Check formatting
+        run: gleam format --check src test
+
+      - name: Run tests
+        run: gleam test
+
+      - name: Build docs
+        run: gleam docs build

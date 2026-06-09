@@ -1,8 +1,8 @@
 import gleam/float
 import gleam/list
-import nla/error.{type NlaError, DimensionMismatch, InvalidInput, ZeroNorm}
-import nla/matrix.{type Matrix}
-import nla/vector.{type Vector}
+import lumatrix/error.{type NlaError, DimensionMismatch, InvalidInput, ZeroNorm}
+import lumatrix/matrix.{type Matrix}
+import lumatrix/vector.{type Vector}
 
 const zero_tolerance = 1.0e-12
 

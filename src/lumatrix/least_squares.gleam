@@ -1,11 +1,11 @@
 import gleam/int
 import gleam/list
-import nla/direct
-import nla/error.{type NlaError, DimensionMismatch}
-import nla/error_analysis
-import nla/matrix.{type Matrix}
-import nla/orthogonal
-import nla/vector.{type Vector}
+import lumatrix/direct
+import lumatrix/error.{type NlaError, DimensionMismatch}
+import lumatrix/error_analysis
+import lumatrix/matrix.{type Matrix}
+import lumatrix/orthogonal
+import lumatrix/vector.{type Vector}
 
 pub type LeastSquaresSolution {
   LeastSquaresSolution(

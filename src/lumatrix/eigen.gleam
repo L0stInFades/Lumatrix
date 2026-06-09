@@ -1,13 +1,13 @@
 import gleam/float
 import gleam/int
 import gleam/list
-import nla/direct
-import nla/error.{
+import lumatrix/direct
+import lumatrix/error.{
   type NlaError, DimensionMismatch, InvalidInput, NotSquare, ZeroNorm,
 }
-import nla/matrix.{type Matrix}
-import nla/orthogonal
-import nla/vector.{type Vector}
+import lumatrix/matrix.{type Matrix}
+import lumatrix/orthogonal
+import lumatrix/vector.{type Vector}
 
 const small = 1.0e-12
 
