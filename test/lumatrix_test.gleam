@@ -893,6 +893,16 @@ pub fn wilkinson_shift_uses_scaled_hypotenuse_test() {
   assert close_to(shift /. 1.0e200, 0.3819660112501051, 1.0e-12)
 }
 
+pub fn wilkinson_shift_keeps_tiny_scaled_shift_test() {
+  let scale = 1.0e-150
+  let assert Ok(a) =
+    matrix.from_rows([[2.0 *. scale, 1.0 *. scale], [1.0 *. scale, scale]])
+
+  let shift = eigen.wilkinson_shift(a)
+
+  assert close_to(shift /. scale, 0.3819660112501051, 1.0e-12)
+}
+
 pub fn symmetric_qr_rejects_nonsymmetric_matrix_test() {
   let assert Ok(a) = matrix.from_rows([[1.0, 2.0], [0.0, 1.0]])
 
@@ -953,6 +963,46 @@ pub fn real_schur_blocks_detect_complex_pair_test() {
   assert_rotation_eigenvalues(values_from_matrix)
   assert_rotation_complex_eigenpairs(pairs_from_schur)
   assert_rotation_complex_eigenpairs(pairs_from_matrix)
+}
+
+pub fn real_schur_blocks_use_scaled_complex_discriminants_test() {
+  let scale = 1.0e200
+  let assert Ok(block) = matrix.from_rows([[0.0, 0.0 -. scale], [scale, 0.0]])
+
+  let assert Ok(blocks) = eigen.real_schur_blocks(block, 1.0e-8)
+  let assert Ok(values) = eigen.real_schur_eigenvalues(block, 1.0e-8)
+
+  case blocks {
+    [
+      eigen.ComplexConjugateBlock(
+        start: start,
+        real: real_part,
+        imaginary: imaginary,
+        trace: trace,
+        determinant: _,
+      ),
+    ] -> {
+      assert start == 0
+      assert close_to(real_part, 0.0, 1.0e-8)
+      assert close_to(imaginary /. scale, 1.0, 1.0e-12)
+      assert close_to(trace, 0.0, 1.0e-8)
+    }
+    _ -> panic as "expected one huge scaled complex Schur block"
+  }
+  assert_scaled_rotation_eigenvalues(values, scale)
+}
+
+pub fn complex_schur_eigenpairs_accept_tiny_scaled_blocks_test() {
+  let scale = 1.0e-150
+  let assert Ok(block) = matrix.from_rows([[0.0, 0.0 -. scale], [scale, 0.0]])
+  let assert Ok(identity) = matrix.identity(2)
+
+  let assert Ok(values) = eigen.real_schur_eigenvalues(block, 1.0e-160)
+  let assert Ok(pairs) =
+    eigen.real_schur_complex_eigenpairs(identity, block, 1.0e-160)
+
+  assert_scaled_rotation_eigenvalues(values, scale)
+  assert_scaled_rotation_complex_eigenpairs(pairs, scale)
 }
 
 pub fn generalized_eigenvalue_routines_reduce_regular_pencils_test() {
@@ -1161,6 +1211,24 @@ fn assert_rotation_eigenvalues(values: List(eigen.Eigenvalue)) -> Nil {
   }
 }
 
+fn assert_scaled_rotation_eigenvalues(
+  values: List(eigen.Eigenvalue),
+  scale: Float,
+) -> Nil {
+  case values {
+    [
+      eigen.ComplexEigenvalue(real: real_pos, imaginary: imag_pos),
+      eigen.ComplexEigenvalue(real: real_neg, imaginary: imag_neg),
+    ] -> {
+      assert close_to(real_pos, 0.0, 1.0e-8)
+      assert close_to(real_neg, 0.0, 1.0e-8)
+      assert close_to(imag_pos /. scale, 1.0, 1.0e-12)
+      assert close_to(imag_neg /. scale, -1.0, 1.0e-12)
+    }
+    _ -> panic as "expected scaled conjugate complex eigenvalues"
+  }
+}
+
 fn has_real_eigenvalue(values: List(eigen.Eigenvalue), target: Float) -> Bool {
   case values {
     [] -> False
@@ -1202,6 +1270,39 @@ fn assert_rotation_complex_eigenpairs(
       assert close_to(negative_norm, 1.0, 1.0e-8)
     }
     _ -> panic as "expected conjugate complex eigenpairs"
+  }
+}
+
+fn assert_scaled_rotation_complex_eigenpairs(
+  pairs: List(eigen.ComplexEigenpair),
+  scale: Float,
+) -> Nil {
+  let scaled_tolerance = scale *. 1.0e-12
+  case pairs {
+    [positive, negative] -> {
+      assert complex.approx_equal(
+        positive.value,
+        complex.new(real: 0.0, imaginary: scale),
+        scaled_tolerance,
+      )
+      assert complex.approx_equal(
+        negative.value,
+        complex.new(real: 0.0, imaginary: 0.0 -. scale),
+        scaled_tolerance,
+      )
+      assert positive.converged
+      assert negative.converged
+      assert positive.residual_norm <=. scaled_tolerance
+      assert negative.residual_norm <=. scaled_tolerance
+      assert complex.vector_dimension(positive.vector) == 2
+      assert complex.vector_dimension(negative.vector) == 2
+
+      let assert Ok(positive_norm) = complex.vector_norm2(positive.vector)
+      let assert Ok(negative_norm) = complex.vector_norm2(negative.vector)
+      assert close_to(positive_norm, 1.0, 1.0e-8)
+      assert close_to(negative_norm, 1.0, 1.0e-8)
+    }
+    _ -> panic as "expected scaled conjugate complex eigenpairs"
   }
 }
 
