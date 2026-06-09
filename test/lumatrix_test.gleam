@@ -1085,6 +1085,38 @@ pub fn lanczos_builds_symmetric_krylov_relation_test() {
   )
 }
 
+pub fn lanczos_full_dimension_uses_relative_happy_breakdown_test() {
+  let assert Ok(a) =
+    matrix.from_rows([
+      [
+        7.78313055712357,
+        -2.34729553561836,
+        0.715360413911937,
+        -5.58859122658511,
+      ],
+      [-2.34729553561836, 5.06694293140312, 1.3763394219514, 3.10586171553665],
+      [0.715360413911937, 1.3763394219514, 3.26605432001826, -0.256186127653957],
+      [
+        -5.58859122658511,
+        3.10586171553665,
+        -0.256186127653957,
+        7.16616890934777,
+      ],
+    ])
+  let initial = vector.from_list([1.0, 2.0, 3.0, 4.0])
+
+  let assert Ok(result) = krylov.lanczos(a, initial, 4, 1.0e-12)
+  let assert Ok(aq) = matrix.mul(a, result.q)
+  let assert Ok(qt) = matrix.mul(result.q, result.t)
+  let assert Ok(qtq) = matrix.mul(matrix.transpose(result.q), result.q)
+  let assert Ok(identity) = matrix.identity(result.steps)
+
+  assert result.steps == 4
+  assert result.happy_breakdown
+  assert matrix.approx_equal(aq, qt, 1.0e-5)
+  assert matrix.approx_equal(qtq, identity, 1.0e-5)
+}
+
 pub fn gmres_solves_nonsymmetric_system_test() {
   let assert Ok(a) = matrix.from_rows([[4.0, 1.0], [2.0, 3.0]])
   let b = vector.from_list([1.0, 2.0])

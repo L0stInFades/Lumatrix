@@ -263,32 +263,40 @@ fn lanczos_loop(
                     Error(e) -> Error(e)
                     Ok(beta) -> {
                       let completed_steps = k + 1
-                      case
-                        beta <=. tolerance
-                        || completed_steps >= requested_steps
-                        || completed_steps >= matrix.rows(a)
-                      {
-                        True ->
-                          build_lanczos_result(
-                            matrix.rows(a),
-                            vectors,
-                            entries,
-                            completed_steps,
-                            beta <=. tolerance,
-                          )
-                        False -> {
-                          let next_q = vector.scale(w, 1.0 /. beta)
-                          lanczos_loop(
-                            a,
-                            requested_steps,
-                            tolerance,
-                            k + 1,
-                            qk,
-                            beta,
-                            list.append(vectors, [next_q]),
-                            [#(k, k + 1, beta), #(k + 1, k, beta), ..entries],
-                          )
-                        }
+                      case vector_breakdown(beta, aq, tolerance) {
+                        Error(e) -> Error(e)
+                        Ok(happy_breakdown) ->
+                          case
+                            happy_breakdown
+                            || completed_steps >= requested_steps
+                            || completed_steps >= matrix.rows(a)
+                          {
+                            True ->
+                              build_lanczos_result(
+                                matrix.rows(a),
+                                vectors,
+                                entries,
+                                completed_steps,
+                                happy_breakdown,
+                              )
+                            False -> {
+                              let next_q = vector.scale(w, 1.0 /. beta)
+                              lanczos_loop(
+                                a,
+                                requested_steps,
+                                tolerance,
+                                k + 1,
+                                qk,
+                                beta,
+                                list.append(vectors, [next_q]),
+                                [
+                                  #(k, k + 1, beta),
+                                  #(k + 1, k, beta),
+                                  ..entries
+                                ],
+                              )
+                            }
+                          }
                       }
                     }
                   }
@@ -1346,6 +1354,18 @@ fn dot_breakdown(
             breakdown_tolerance,
           ))
       }
+  }
+}
+
+fn vector_breakdown(
+  value: Float,
+  reference: Vector,
+  tolerance: Float,
+) -> Result(Bool, NlaError) {
+  case vector.norm2(reference) {
+    Error(e) -> Error(e)
+    Ok(reference_norm) ->
+      Ok(numerics.relative_near_zero(value, reference_norm, tolerance))
   }
 }
 
