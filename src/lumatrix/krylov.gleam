@@ -612,7 +612,7 @@ fn bicgstab_step(
         Ok(True) ->
           Error(InvalidInput("BiCGSTAB breakdown: rho is nearly zero"))
         Ok(False) ->
-          case float.absolute_value(omega) <=. breakdown_tolerance {
+          case float.absolute_value(omega) <=. 0.0 {
             True ->
               Error(InvalidInput("BiCGSTAB breakdown: omega is nearly zero"))
             False -> {
@@ -754,7 +754,7 @@ fn bicgstab_after_t(
             Error(e) -> Error(e)
             Ok(ts) -> {
               let omega = ts /. tt
-              case float.absolute_value(omega) <=. breakdown_tolerance {
+              case float.absolute_value(omega) <=. 0.0 {
                 True ->
                   Error(InvalidInput("BiCGSTAB breakdown: omega is nearly zero"))
                 False -> bicgstab_finish_step(x, s, t, p, v, rho, alpha, omega)
@@ -823,7 +823,7 @@ fn minres_short_loop(
   case iteration >= max_iterations || happy_breakdown {
     True -> finish_solver(a, b, x, iteration, tolerance, happy_breakdown)
     False ->
-      case beta <=. breakdown_tolerance {
+      case beta <=. 0.0 {
         True -> finish_solver(a, b, x, iteration, tolerance, True)
         False -> {
           let v = vector.scale(r_curr, 1.0 /. beta)

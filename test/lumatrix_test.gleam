@@ -1180,6 +1180,23 @@ pub fn bicg_family_uses_relative_breakdown_thresholds_test() {
   assert vector.approx_equal(bicgstab.solution, expected, 1.0e-8)
 }
 
+pub fn bicgstab_accepts_huge_scaled_stabilization_steps_test() {
+  let scale = 1.0e20
+  let assert Ok(a) =
+    matrix.from_rows([
+      [4.0 *. scale, 1.0 *. scale],
+      [2.0 *. scale, 3.0 *. scale],
+    ])
+  let b = vector.from_list([1.0 *. scale, 2.0 *. scale])
+  let assert Ok(initial) = vector.zeros(2)
+  let expected = vector.from_list([0.1, 0.6])
+
+  let assert Ok(bicgstab) = krylov.bicgstab(a, b, initial, 4, 1.0e5)
+
+  assert bicgstab.converged
+  assert vector.approx_equal(bicgstab.solution, expected, 1.0e-8)
+}
+
 pub fn minres_solves_symmetric_indefinite_system_test() {
   let assert Ok(a) = matrix.from_rows([[2.0, 1.0], [1.0, -1.0]])
   let b = vector.from_list([1.0, 0.0])
@@ -1191,6 +1208,23 @@ pub fn minres_solves_symmetric_indefinite_system_test() {
   assert minres.converged
   assert minres.iterations <= 2
   assert minres.residual_norm <=. 1.0e-8
+  assert vector.approx_equal(minres.solution, expected, 1.0e-8)
+}
+
+pub fn minres_accepts_tiny_scaled_lanczos_beta_test() {
+  let scale = 1.0e-80
+  let assert Ok(a) =
+    matrix.from_rows([
+      [2.0 *. scale, 1.0 *. scale],
+      [1.0 *. scale, -1.0 *. scale],
+    ])
+  let b = vector.from_list([1.0 *. scale, 0.0])
+  let assert Ok(initial) = vector.zeros(2)
+  let expected = vector.from_list([0.3333333333333333, 0.3333333333333333])
+
+  let assert Ok(minres) = krylov.minres(a, b, initial, 4, 1.0e-88)
+
+  assert minres.converged
   assert vector.approx_equal(minres.solution, expected, 1.0e-8)
 }
 
