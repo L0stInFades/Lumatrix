@@ -54,31 +54,25 @@ pub fn householder_qr(
 ) -> Result(LeastSquaresSolution, NlaError) {
   case validate_least_squares_system(a, b) {
     Error(e) -> Error(e)
-    Ok(_) -> {
+    Ok(_) ->
       case orthogonal.qr_householder(a) {
         Error(e) -> Error(e)
-        Ok(qr) -> {
-          let qt = matrix.transpose(qr.q)
-          case matrix.mul_vec(qt, b) {
-            Error(e) -> Error(e)
-            Ok(qtb) -> {
-              let r1 = leading_square(qr.r, a.cols)
-              let c1 = leading_vector(qtb, a.cols)
-              case direct.back_substitution(r1, c1) {
-                Error(e) -> Error(e)
-                Ok(x) -> {
-                  let at = matrix.transpose(a)
-                  case matrix.mul(at, a) {
-                    Error(e) -> Error(e)
-                    Ok(ata) -> finish_solution(a, b, ata, x)
-                  }
-                }
-              }
-            }
-          }
-        }
+        Ok(qr) -> solve_full_qr(a, b, qr)
       }
-    }
+  }
+}
+
+pub fn givens_qr(
+  a: Matrix,
+  b: Vector,
+) -> Result(LeastSquaresSolution, NlaError) {
+  case validate_least_squares_system(a, b) {
+    Error(e) -> Error(e)
+    Ok(_) ->
+      case orthogonal.qr_givens(a) {
+        Error(e) -> Error(e)
+        Ok(qr) -> solve_full_qr(a, b, qr)
+      }
   }
 }
 
@@ -160,6 +154,31 @@ pub fn stability_diagnostics(
                   }
               }
           }
+      }
+    }
+  }
+}
+
+fn solve_full_qr(
+  a: Matrix,
+  b: Vector,
+  qr: orthogonal.QR,
+) -> Result(LeastSquaresSolution, NlaError) {
+  let qt = matrix.transpose(qr.q)
+  case matrix.mul_vec(qt, b) {
+    Error(e) -> Error(e)
+    Ok(qtb) -> {
+      let r1 = leading_square(qr.r, a.cols)
+      let c1 = leading_vector(qtb, a.cols)
+      case direct.back_substitution(r1, c1) {
+        Error(e) -> Error(e)
+        Ok(x) -> {
+          let at = matrix.transpose(a)
+          case matrix.mul(at, a) {
+            Error(e) -> Error(e)
+            Ok(ata) -> finish_solution(a, b, ata, x)
+          }
+        }
       }
     }
   }

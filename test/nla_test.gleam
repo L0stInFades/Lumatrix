@@ -218,6 +218,7 @@ pub fn least_squares_normal_and_qr_agree_test() {
 
   let assert Ok(normal) = least_squares.normal_equations(a, b)
   let assert Ok(qr) = least_squares.householder_qr(a, b)
+  let assert Ok(givens) = least_squares.givens_qr(a, b)
   let assert Ok(cgs) = least_squares.classical_gram_schmidt_qr(a, b)
   let assert Ok(mgs) = least_squares.modified_gram_schmidt_qr(a, b)
   let assert Ok(diagnostics) =
@@ -225,9 +226,11 @@ pub fn least_squares_normal_and_qr_agree_test() {
 
   assert vector.approx_equal(normal.solution, expected, 1.0e-8)
   assert vector.approx_equal(qr.solution, expected, 1.0e-8)
+  assert vector.approx_equal(givens.solution, expected, 1.0e-8)
   assert vector.approx_equal(cgs.solution, expected, 1.0e-8)
   assert vector.approx_equal(mgs.solution, expected, 1.0e-8)
   assert close(normal.residual_norm, qr.residual_norm)
+  assert close(normal.residual_norm, givens.residual_norm)
   assert close(normal.residual_norm, cgs.residual_norm)
   assert close(normal.residual_norm, mgs.residual_norm)
   assert normal.normal_matrix_condition_inf >. 0.0
