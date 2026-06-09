@@ -1,22 +1,25 @@
 # Lumatrix
 
 [![CI](https://github.com/L0stInFades/Lumatrix/actions/workflows/ci.yml/badge.svg)](https://github.com/L0stInFades/Lumatrix/actions/workflows/ci.yml)
-[![Release](https://github.com/L0stInFades/Lumatrix/actions/workflows/release.yml/badge.svg)](https://github.com/L0stInFades/Lumatrix/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 English: [README.md](README.md)
 
-Lumatrix 是一个纯 Gleam 编写的数值线性代数库。它希望把经典算法保留在接近
-教材的形状里，让人可以读、可以检查，也可以温和地继续扩展。
+Lumatrix 是一个纯 Gleam 编写的数值线性代数库。它关注小而可检查的数值内核、
+受控的数据形状、带残差语义的 API，以及尽可能稳定的默认算法。
 
-它不打算替代 BLAS 或 LAPACK。它更关心另一件事：清楚的教材式实现、稳定的 API
-边界，以及一个适合学习、测试和轻量数值计算的 Gleam 工具箱。
+它不打算替代 BLAS 或 LAPACK。它更像一个 Gleam 原生的数值层：容易审阅，
+容易扩展，也足够支撑 Gleam 应用和工具里的轻量数值计算。
 
 ## 它提供什么
 
-- 稠密坐标向量与行主序矩阵，构造时检查数据，内部结构对外隐藏。
-- 直接法、正交变换、最小二乘、迭代法、Krylov 方法、特征值算法和基础误差分析。
-- 小而清楚的实现，便于阅读、推导、验证和继续改进。
+- 稠密坐标向量、行主序矩阵和 canonical CSR 稀疏矩阵，构造时检查数据，内部结构对外
+  隐藏。
+- 直接法、正交变换、最小二乘、迭代法、Krylov 方法、SVD 工具、实/复特征值算法和
+  基础误差分析。
+- 偏稳定性的构件：带主元的直接法、Householder / Givens QR 路径、残差诊断、
+  迭代改进、会显式处理 breakdown 的 Krylov 求解器，以及 one-sided Jacobi SVD
+  形式的伪逆、数值秩和 2-范数条件数路径。
 
 ## API 约定
 
@@ -39,19 +42,39 @@ QR 分解结果会带有 `form` 标签。Householder QR 和 Givens QR 返回 `Fu
 最小二乘求解器返回解和残差范数；条件数、正规方程残差等诊断量放在
 `least_squares.stability_diagnostics` 里。
 
+SVD 使用 one-sided Jacobi 迭代，不通过显式构造 `A^T A` 来求奇异值，因此 SVD
+最小二乘路径不会引入正规方程带来的条件数平方问题。`svd.rank`、`svd.pseudoinverse`
+和 `svd.condition_number` 使用同一套奇异值 cutoff 规则。
+
+稀疏矩阵放在 `lumatrix/sparse` 中，不改变稠密 `Matrix` 类型。它使用 canonical CSR
+存储：构造时会检查坐标边界、按行列排序、合并重复坐标，并丢弃需要过滤的零值。
+
+复数标量与复坐标向量放在 `lumatrix/complex` 中。一般实矩阵的特征值例程可以从
+实 Schur 形式中提取复特征对，并计算 `A * v = lambda * v` 的残差。
+
+广义特征值例程覆盖 `B` 可逆的 regular problem：先用完全主元直接法把
+`A * v = lambda * B * v` 化为标准矩阵 `B^-1 * A`，再按原始 pencil 回算残差。
+
 ## 模块
 
 - `lumatrix/vector` 和 `lumatrix/matrix`：稠密坐标向量与行主序矩阵。
-- `lumatrix/direct`：高斯消元、部分选主元 LU、Cholesky、三角求解、行列式与逆矩阵。
+- `lumatrix/complex`：复数标量与复坐标向量。
+- `lumatrix/sparse`：canonical CSR 稀疏矩阵、稠密转换、矩阵-向量乘法、转置、
+  缩放和无穷范数。
+- `lumatrix/direct`：高斯消元、部分/完全选主元 LU、Cholesky、三角求解、行列式与
+  逆矩阵。
 - `lumatrix/orthogonal`：Householder 变换、Givens 旋转和 QR 分解。
 - `lumatrix/least_squares`：默认 Householder QR 的 `solve`，以及正规方程、
-  Givens QR、Gram-Schmidt QR 和稳定性诊断。
+  Givens QR、Gram-Schmidt QR、SVD 最小二乘和稳定性诊断。
+- `lumatrix/svd`：薄 SVD、伪逆、数值秩、2-范数、2-范数条件数和基于 SVD 的求解。
 - `lumatrix/error_analysis`：残差、迭代改进、误差界和无穷范数条件数估计。
 - `lumatrix/iterative`：Jacobi、Gauss-Seidel、SOR、最速下降、共轭梯度和预条件
   共轭梯度。
-- `lumatrix/krylov`：Arnoldi、Lanczos、GMRES 和重启 GMRES。
+- `lumatrix/krylov`：Arnoldi、Lanczos、GMRES、重启 GMRES、BiCG、BiCGSTAB 和
+  MINRES。
 - `lumatrix/eigen`：幂法、Hessenberg 与三对角化、Jacobi 特征值迭代、QR 迭代、
-  Schur 块工具和对称特征分解。
+  Schur 块工具、对称特征分解、`B` 可逆时的广义特征值，以及从实 Schur 形式提取
+  复特征对。
 
 ## 示例
 
@@ -77,26 +100,17 @@ gleam test
 gleam docs build
 ```
 
-## CI/CD
+## 质量检查
 
-CI workflow 会在 push、pull request 和手动触发时运行。它会下载依赖、检查格式、
-运行测试，并构建生成文档。
-
-Release workflow 可以通过 `vX.Y.Z` tag 触发，也可以手动触发。它会校验发布版本
-是否和 `gleam.toml` 一致，并重新运行 CI 同级别的检查。
-
-```sh
-git tag v1.0.0
-git push origin v1.0.0
-```
+本地和 CI 使用同一组核心检查：格式、测试和生成文档。数值例程应暴露收敛状态
+和残差质量，不把失败隐藏在未经检查的返回值里。
 
 ## 仓库组织
 
 - `src/lumatrix/*.gleam`：库代码。
 - `test/lumatrix_test.gleam`：单元测试和算法行为测试。
 - `gleam.toml` 和 `manifest.toml`：包元数据和锁文件。
-- `.github/workflows/ci.yml`：CI 中的格式、测试和文档检查。
-- `.github/workflows/release.yml`：通过 release tag 或手动触发做发布前检查。
+- `.github/workflows/*.yml`：仓库自动化检查。
 
 ## 许可证
 

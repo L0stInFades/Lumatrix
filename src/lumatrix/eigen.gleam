@@ -1,9 +1,11 @@
 import gleam/float
 import gleam/int
 import gleam/list
+import lumatrix/complex
 import lumatrix/direct
 import lumatrix/error.{
-  type NlaError, DimensionMismatch, InvalidInput, NotSquare, ZeroNorm,
+  type NlaError, DimensionMismatch, InvalidInput, NoConvergence, NotSquare,
+  ZeroNorm,
 }
 import lumatrix/matrix.{type Matrix}
 import lumatrix/orthogonal
@@ -15,6 +17,16 @@ pub type Eigenpair {
   Eigenpair(
     value: Float,
     vector: Vector,
+    residual_norm: Float,
+    iterations: Int,
+    converged: Bool,
+  )
+}
+
+pub type ComplexEigenpair {
+  ComplexEigenpair(
+    value: complex.Complex,
+    vector: complex.ComplexVector,
     residual_norm: Float,
     iterations: Int,
     converged: Bool,
@@ -377,6 +389,134 @@ pub fn real_schur_eigenvalues_of(
       case schur.converged {
         True -> real_schur_eigenvalues(schur.t, tolerance)
         False -> Error(InvalidInput("real Schur iteration did not converge"))
+      }
+  }
+}
+
+pub fn generalized_standard_matrix(
+  a: Matrix,
+  b: Matrix,
+) -> Result(Matrix, NlaError) {
+  case validate_square_pair(a, b) {
+    Error(e) -> Error(e)
+    Ok(_) ->
+      case direct.inverse_complete_pivoting(b) {
+        Error(e) -> Error(e)
+        Ok(b_inverse) -> matrix.mul(b_inverse, a)
+      }
+  }
+}
+
+pub fn generalized_real_schur(
+  a: Matrix,
+  b: Matrix,
+  max_iterations: Int,
+  tolerance: Float,
+) -> Result(SchurResult, NlaError) {
+  case generalized_standard_matrix(a, b) {
+    Error(e) -> Error(e)
+    Ok(standard) -> real_schur_basic(standard, max_iterations, tolerance)
+  }
+}
+
+pub fn generalized_eigenvalues(
+  a: Matrix,
+  b: Matrix,
+  max_iterations: Int,
+  tolerance: Float,
+) -> Result(List(Eigenvalue), NlaError) {
+  case generalized_real_schur(a, b, max_iterations, tolerance) {
+    Error(e) -> Error(e)
+    Ok(schur) ->
+      case schur.converged {
+        False ->
+          Error(NoConvergence(
+            iterations: schur.iterations,
+            residual: quasi_lower_off_diagonal_norm(schur.t, tolerance),
+          ))
+        True -> real_schur_eigenvalues(schur.t, tolerance)
+      }
+  }
+}
+
+pub fn generalized_complex_eigenpairs(
+  a: Matrix,
+  b: Matrix,
+  max_iterations: Int,
+  tolerance: Float,
+) -> Result(List(ComplexEigenpair), NlaError) {
+  case generalized_standard_matrix(a, b) {
+    Error(e) -> Error(e)
+    Ok(standard) ->
+      case complex_eigenpairs_of(standard, max_iterations, tolerance) {
+        Error(e) -> Error(e)
+        Ok(pairs) ->
+          list.try_map(over: pairs, with: fn(pair) {
+            case
+              generalized_complex_eigen_residual(a, b, pair.vector, pair.value)
+            {
+              Error(e) -> Error(e)
+              Ok(residual_norm) ->
+                Ok(ComplexEigenpair(
+                  value: pair.value,
+                  vector: pair.vector,
+                  residual_norm: residual_norm,
+                  iterations: pair.iterations,
+                  converged: pair.converged && residual_norm <=. tolerance,
+                ))
+            }
+          })
+      }
+  }
+}
+
+pub fn real_schur_complex_eigenpairs(
+  q: Matrix,
+  t: Matrix,
+  tolerance: Float,
+) -> Result(List(ComplexEigenpair), NlaError) {
+  case validate_schur_eigenpair_inputs(q, t) {
+    Error(e) -> Error(e)
+    Ok(_) ->
+      case real_schur_blocks(t, tolerance) {
+        Error(e) -> Error(e)
+        Ok(blocks) -> schur_blocks_complex_eigenpairs(q, t, blocks, blocks, 0)
+      }
+  }
+}
+
+pub fn complex_eigenpairs_of(
+  a: Matrix,
+  max_iterations: Int,
+  tolerance: Float,
+) -> Result(List(ComplexEigenpair), NlaError) {
+  case real_schur_basic(a, max_iterations, tolerance) {
+    Error(e) -> Error(e)
+    Ok(schur) ->
+      case schur.converged {
+        False ->
+          Error(NoConvergence(
+            iterations: schur.iterations,
+            residual: quasi_lower_off_diagonal_norm(schur.t, tolerance),
+          ))
+        True ->
+          case real_schur_complex_eigenpairs(schur.q, schur.t, tolerance) {
+            Error(e) -> Error(e)
+            Ok(pairs) ->
+              list.try_map(over: pairs, with: fn(pair) {
+                case complex_eigen_residual(a, pair.vector, pair.value) {
+                  Error(e) -> Error(e)
+                  Ok(residual_norm) ->
+                    Ok(ComplexEigenpair(
+                      value: pair.value,
+                      vector: pair.vector,
+                      residual_norm: residual_norm,
+                      iterations: schur.iterations,
+                      converged: True,
+                    ))
+                }
+              })
+          }
       }
   }
 }
@@ -1124,6 +1264,535 @@ fn invalid_subdiagonal_norm(a: Matrix, index: Int, tolerance: Float) -> Float {
           }
       }
     }
+  }
+}
+
+fn schur_blocks_complex_eigenpairs(
+  q: Matrix,
+  t: Matrix,
+  all_blocks: List(SchurBlock),
+  remaining: List(SchurBlock),
+  iterations: Int,
+) -> Result(List(ComplexEigenpair), NlaError) {
+  case remaining {
+    [] -> Ok([])
+    [block, ..rest] ->
+      case schur_block_complex_eigenpairs(q, t, all_blocks, block, iterations) {
+        Error(e) -> Error(e)
+        Ok(block_pairs) ->
+          case
+            schur_blocks_complex_eigenpairs(q, t, all_blocks, rest, iterations)
+          {
+            Error(e) -> Error(e)
+            Ok(rest_pairs) -> Ok(list.append(block_pairs, rest_pairs))
+          }
+      }
+  }
+}
+
+fn schur_block_complex_eigenpairs(
+  q: Matrix,
+  t: Matrix,
+  all_blocks: List(SchurBlock),
+  block: SchurBlock,
+  iterations: Int,
+) -> Result(List(ComplexEigenpair), NlaError) {
+  case block {
+    RealBlock(index: _, value: value) -> {
+      let lambda = complex.from_real(value)
+      case schur_eigenvector(t, all_blocks, block, lambda) {
+        Error(e) -> Error(e)
+        Ok(local_vector) ->
+          case transform_schur_vector(q, local_vector) {
+            Error(e) -> Error(e)
+            Ok(vector) ->
+              case complex_eigen_residual(t, local_vector, lambda) {
+                Error(e) -> Error(e)
+                Ok(residual_norm) ->
+                  Ok([
+                    ComplexEigenpair(
+                      value: lambda,
+                      vector: vector,
+                      residual_norm: residual_norm,
+                      iterations: iterations,
+                      converged: True,
+                    ),
+                  ])
+              }
+          }
+      }
+    }
+    ComplexConjugateBlock(
+      start: _,
+      real: real_part,
+      imaginary: imaginary,
+      trace: _,
+      determinant: _,
+    ) -> {
+      let positive = complex.new(real: real_part, imaginary: imaginary)
+      let negative = complex.conjugate(positive)
+      case
+        schur_eigenpair_for_value(q, t, all_blocks, block, positive, iterations)
+      {
+        Error(e) -> Error(e)
+        Ok(positive_pair) ->
+          case
+            schur_eigenpair_for_value(
+              q,
+              t,
+              all_blocks,
+              block,
+              negative,
+              iterations,
+            )
+          {
+            Error(e) -> Error(e)
+            Ok(negative_pair) -> Ok([positive_pair, negative_pair])
+          }
+      }
+    }
+  }
+}
+
+fn schur_eigenpair_for_value(
+  q: Matrix,
+  t: Matrix,
+  all_blocks: List(SchurBlock),
+  block: SchurBlock,
+  lambda: complex.Complex,
+  iterations: Int,
+) -> Result(ComplexEigenpair, NlaError) {
+  case schur_eigenvector(t, all_blocks, block, lambda) {
+    Error(e) -> Error(e)
+    Ok(local_vector) ->
+      case transform_schur_vector(q, local_vector) {
+        Error(e) -> Error(e)
+        Ok(vector) ->
+          case complex_eigen_residual(t, local_vector, lambda) {
+            Error(e) -> Error(e)
+            Ok(residual_norm) ->
+              Ok(ComplexEigenpair(
+                value: lambda,
+                vector: vector,
+                residual_norm: residual_norm,
+                iterations: iterations,
+                converged: True,
+              ))
+          }
+      }
+  }
+}
+
+fn schur_eigenvector(
+  t: Matrix,
+  blocks: List(SchurBlock),
+  target: SchurBlock,
+  lambda: complex.Complex,
+) -> Result(complex.ComplexVector, NlaError) {
+  case seed_schur_vector(t, target, lambda) {
+    Error(e) -> Error(e)
+    Ok(seed) ->
+      case
+        schur_back_substitute(
+          t,
+          blocks_before(blocks, block_start(target), []),
+          lambda,
+          seed,
+        )
+      {
+        Error(e) -> Error(e)
+        Ok(vector) -> complex.vector_normalize(vector)
+      }
+  }
+}
+
+fn schur_back_substitute(
+  t: Matrix,
+  reversed_blocks: List(SchurBlock),
+  lambda: complex.Complex,
+  y: complex.ComplexVector,
+) -> Result(complex.ComplexVector, NlaError) {
+  case reversed_blocks {
+    [] -> Ok(y)
+    [block, ..rest] ->
+      case solve_previous_schur_block(t, block, lambda, y) {
+        Error(e) -> Error(e)
+        Ok(next_y) -> schur_back_substitute(t, rest, lambda, next_y)
+      }
+  }
+}
+
+fn solve_previous_schur_block(
+  t: Matrix,
+  block: SchurBlock,
+  lambda: complex.Complex,
+  y: complex.ComplexVector,
+) -> Result(complex.ComplexVector, NlaError) {
+  case block {
+    RealBlock(index: index, value: value) -> {
+      let rhs = complex.negate(schur_known_rhs(t, index, index + 1, y))
+      let denominator = complex.sub(complex.from_real(value), lambda)
+      case safe_complex_div(rhs, denominator) {
+        Error(e) -> Error(e)
+        Ok(entry) -> Ok(set_complex_vector(y, index, entry))
+      }
+    }
+    ComplexConjugateBlock(
+      start: start,
+      real: _,
+      imaginary: _,
+      trace: _,
+      determinant: _,
+    ) -> {
+      let end = start + 2
+      let rhs0 = complex.negate(schur_known_rhs(t, start, end, y))
+      let rhs1 = complex.negate(schur_known_rhs(t, start + 1, end, y))
+      let a =
+        complex.sub(
+          complex.from_real(matrix.unsafe_get(t, start, start)),
+          lambda,
+        )
+      let b = complex.from_real(matrix.unsafe_get(t, start, start + 1))
+      let c = complex.from_real(matrix.unsafe_get(t, start + 1, start))
+      let d =
+        complex.sub(
+          complex.from_real(matrix.unsafe_get(t, start + 1, start + 1)),
+          lambda,
+        )
+      case solve_complex_2x2(a, b, c, d, rhs0, rhs1) {
+        Error(e) -> Error(e)
+        Ok(#(first, second)) ->
+          Ok(set_complex_vector(
+            set_complex_vector(y, start, first),
+            start + 1,
+            second,
+          ))
+      }
+    }
+  }
+}
+
+fn solve_complex_2x2(
+  a: complex.Complex,
+  b: complex.Complex,
+  c: complex.Complex,
+  d: complex.Complex,
+  rhs0: complex.Complex,
+  rhs1: complex.Complex,
+) -> Result(#(complex.Complex, complex.Complex), NlaError) {
+  let determinant = complex.sub(complex.mul(a, d), complex.mul(b, c))
+  case
+    safe_complex_div(
+      complex.sub(complex.mul(rhs0, d), complex.mul(b, rhs1)),
+      determinant,
+    )
+  {
+    Error(e) -> Error(e)
+    Ok(first) ->
+      case
+        safe_complex_div(
+          complex.sub(complex.mul(a, rhs1), complex.mul(rhs0, c)),
+          determinant,
+        )
+      {
+        Error(e) -> Error(e)
+        Ok(second) -> Ok(#(first, second))
+      }
+  }
+}
+
+fn schur_known_rhs(
+  t: Matrix,
+  row: Int,
+  from_col: Int,
+  y: complex.ComplexVector,
+) -> complex.Complex {
+  real_complex_dot(
+    list.drop(matrix_row_values(t, row), up_to: from_col),
+    list.drop(complex.vector_to_list(y), up_to: from_col),
+  )
+}
+
+fn seed_schur_vector(
+  t: Matrix,
+  block: SchurBlock,
+  lambda: complex.Complex,
+) -> Result(complex.ComplexVector, NlaError) {
+  case complex.vector_zeros(matrix.rows(t)) {
+    Error(e) -> Error(e)
+    Ok(zero_vector) ->
+      case block {
+        RealBlock(index: index, value: _) ->
+          Ok(set_complex_vector(zero_vector, index, complex.one()))
+        ComplexConjugateBlock(
+          start: start,
+          real: _,
+          imaginary: _,
+          trace: _,
+          determinant: _,
+        ) -> {
+          case complex_block_seed(t, start, lambda) {
+            Error(e) -> Error(e)
+            Ok(#(first, second)) ->
+              Ok(set_complex_vector(
+                set_complex_vector(zero_vector, start, first),
+                start + 1,
+                second,
+              ))
+          }
+        }
+      }
+  }
+}
+
+fn complex_block_seed(
+  t: Matrix,
+  start: Int,
+  lambda: complex.Complex,
+) -> Result(#(complex.Complex, complex.Complex), NlaError) {
+  let a00 = matrix.unsafe_get(t, start, start)
+  let a01 = matrix.unsafe_get(t, start, start + 1)
+  let a10 = matrix.unsafe_get(t, start + 1, start)
+  let a11 = matrix.unsafe_get(t, start + 1, start + 1)
+  case float.absolute_value(a01) >=. float.absolute_value(a10) {
+    True ->
+      case float.absolute_value(a01) <=. small {
+        True -> Error(InvalidInput("complex Schur block is singular"))
+        False ->
+          Ok(#(
+            complex.from_real(a01),
+            complex.sub(lambda, complex.from_real(a00)),
+          ))
+      }
+    False ->
+      case float.absolute_value(a10) <=. small {
+        True -> Error(InvalidInput("complex Schur block is singular"))
+        False ->
+          Ok(#(
+            complex.sub(lambda, complex.from_real(a11)),
+            complex.from_real(a10),
+          ))
+      }
+  }
+}
+
+fn transform_schur_vector(
+  q: Matrix,
+  y: complex.ComplexVector,
+) -> Result(complex.ComplexVector, NlaError) {
+  case matrix.cols(q) == complex.vector_dimension(y) {
+    False ->
+      Error(DimensionMismatch(
+        expected: int.to_string(matrix.cols(q)),
+        actual: int.to_string(complex.vector_dimension(y)),
+      ))
+    True -> {
+      let y_values = complex.vector_to_list(y)
+      Ok(
+        complex.vector_from_list(
+          list.map(matrix.to_rows(q), fn(row) {
+            real_complex_dot(row, y_values)
+          }),
+        ),
+      )
+    }
+  }
+}
+
+fn complex_eigen_residual(
+  a: Matrix,
+  x: complex.ComplexVector,
+  lambda: complex.Complex,
+) -> Result(Float, NlaError) {
+  case matrix.is_square(a) {
+    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
+    True ->
+      case matrix.cols(a) == complex.vector_dimension(x) {
+        False ->
+          Error(DimensionMismatch(
+            expected: int.to_string(matrix.cols(a)),
+            actual: int.to_string(complex.vector_dimension(x)),
+          ))
+        True ->
+          case real_matrix_mul_complex_vec(a, x) {
+            Error(e) -> Error(e)
+            Ok(ax) ->
+              case complex.vector_axpy(complex.negate(lambda), x, ax) {
+                Error(e) -> Error(e)
+                Ok(residual) -> complex.vector_norm2(residual)
+              }
+          }
+      }
+  }
+}
+
+fn generalized_complex_eigen_residual(
+  a: Matrix,
+  b: Matrix,
+  x: complex.ComplexVector,
+  lambda: complex.Complex,
+) -> Result(Float, NlaError) {
+  case validate_square_pair(a, b) {
+    Error(e) -> Error(e)
+    Ok(_) ->
+      case real_matrix_mul_complex_vec(a, x) {
+        Error(e) -> Error(e)
+        Ok(ax) ->
+          case real_matrix_mul_complex_vec(b, x) {
+            Error(e) -> Error(e)
+            Ok(bx) ->
+              case complex.vector_axpy(complex.negate(lambda), bx, ax) {
+                Error(e) -> Error(e)
+                Ok(residual) -> complex.vector_norm2(residual)
+              }
+          }
+      }
+  }
+}
+
+fn real_matrix_mul_complex_vec(
+  a: Matrix,
+  x: complex.ComplexVector,
+) -> Result(complex.ComplexVector, NlaError) {
+  case matrix.cols(a) == complex.vector_dimension(x) {
+    False ->
+      Error(DimensionMismatch(
+        expected: int.to_string(matrix.cols(a)),
+        actual: int.to_string(complex.vector_dimension(x)),
+      ))
+    True -> {
+      let x_values = complex.vector_to_list(x)
+      Ok(
+        complex.vector_from_list(
+          list.map(matrix.to_rows(a), fn(row) {
+            real_complex_dot(row, x_values)
+          }),
+        ),
+      )
+    }
+  }
+}
+
+fn real_complex_dot(
+  row: List(Float),
+  values: List(complex.Complex),
+) -> complex.Complex {
+  list.fold(list.zip(row, with: values), complex.zero(), fn(acc, pair) {
+    let #(matrix_value, vector_value) = pair
+    complex.add(acc, complex.scale(vector_value, matrix_value))
+  })
+}
+
+fn matrix_row_values(a: Matrix, row: Int) -> List(Float) {
+  list.map(matrix.indices(matrix.cols(a)), fn(col) {
+    matrix.unsafe_get(a, row, col)
+  })
+}
+
+fn validate_square_pair(a: Matrix, b: Matrix) -> Result(Nil, NlaError) {
+  case matrix.is_square(a), matrix.is_square(b) {
+    False, _ -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
+    _, False -> Error(NotSquare(matrix.rows(b), matrix.cols(b)))
+    True, True ->
+      case matrix.rows(a) == matrix.rows(b) {
+        True -> Ok(Nil)
+        False ->
+          Error(DimensionMismatch(
+            expected: "matching square dimension "
+              <> int.to_string(matrix.rows(a)),
+            actual: int.to_string(matrix.rows(b)),
+          ))
+      }
+  }
+}
+
+fn safe_complex_div(
+  numerator: complex.Complex,
+  denominator: complex.Complex,
+) -> Result(complex.Complex, NlaError) {
+  case complex.abs_squared(denominator) <=. small *. small {
+    True -> Error(InvalidInput("ill-conditioned complex Schur solve"))
+    False -> complex.div(numerator, denominator)
+  }
+}
+
+fn blocks_before(
+  blocks: List(SchurBlock),
+  target_start: Int,
+  acc: List(SchurBlock),
+) -> List(SchurBlock) {
+  case blocks {
+    [] -> acc
+    [block, ..rest] ->
+      case block_start(block) < target_start {
+        True -> blocks_before(rest, target_start, [block, ..acc])
+        False -> acc
+      }
+  }
+}
+
+fn block_start(block: SchurBlock) -> Int {
+  case block {
+    RealBlock(index: index, value: _) -> index
+    ComplexConjugateBlock(
+      start: start,
+      real: _,
+      imaginary: _,
+      trace: _,
+      determinant: _,
+    ) -> start
+  }
+}
+
+fn set_complex_vector(
+  vector: complex.ComplexVector,
+  index: Int,
+  value: complex.Complex,
+) -> complex.ComplexVector {
+  complex.vector_from_list(set_complex_at(
+    complex.vector_to_list(vector),
+    index,
+    value,
+  ))
+}
+
+fn set_complex_at(
+  data: List(complex.Complex),
+  index: Int,
+  value: complex.Complex,
+) -> List(complex.Complex) {
+  case data {
+    [] -> []
+    [first, ..rest] ->
+      case index == 0 {
+        True -> [value, ..rest]
+        False -> [first, ..set_complex_at(rest, index - 1, value)]
+      }
+  }
+}
+
+fn validate_schur_eigenpair_inputs(
+  q: Matrix,
+  t: Matrix,
+) -> Result(Nil, NlaError) {
+  case matrix.is_square(q), matrix.is_square(t) {
+    False, _ -> Error(NotSquare(matrix.rows(q), matrix.cols(q)))
+    _, False -> Error(NotSquare(matrix.rows(t), matrix.cols(t)))
+    True, True ->
+      case
+        matrix.rows(q) == matrix.rows(t) && matrix.cols(q) == matrix.cols(t)
+      {
+        True -> Ok(Nil)
+        False ->
+          Error(DimensionMismatch(
+            expected: int.to_string(matrix.rows(t))
+              <> "x"
+              <> int.to_string(matrix.cols(t)),
+            actual: int.to_string(matrix.rows(q))
+              <> "x"
+              <> int.to_string(matrix.cols(q)),
+          ))
+      }
   }
 }
 
