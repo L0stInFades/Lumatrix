@@ -7,14 +7,15 @@ import lumatrix/matrix.{type Matrix}
 import lumatrix/orthogonal
 import lumatrix/vector.{type Vector}
 
+/// Core least-squares solve output.
+///
+/// Use `stability_diagnostics` when condition numbers or normal-equation
+/// residuals are needed.
 pub type LeastSquaresSolution {
-  LeastSquaresSolution(
-    solution: Vector,
-    residual_norm: Float,
-    normal_matrix_condition_inf: Float,
-  )
+  LeastSquaresSolution(solution: Vector, residual_norm: Float)
 }
 
+/// Diagnostic quantities for a least-squares solution.
 pub type LeastSquaresDiagnostics {
   LeastSquaresDiagnostics(
     residual_norm: Float,
@@ -22,6 +23,10 @@ pub type LeastSquaresDiagnostics {
     normal_matrix_condition_inf: Float,
     normal_equation_residual_norm: Float,
   )
+}
+
+pub fn solve(a: Matrix, b: Vector) -> Result(LeastSquaresSolution, NlaError) {
+  householder_qr(a, b)
 }
 
 pub fn normal_equations(
@@ -40,7 +45,7 @@ pub fn normal_equations(
             Ok(atb) ->
               case direct.solve(ata, atb) {
                 Error(e) -> Error(e)
-                Ok(x) -> finish_solution(a, b, ata, x)
+                Ok(x) -> finish_solution(a, b, x)
               }
           }
       }
@@ -55,7 +60,7 @@ pub fn householder_qr(
   case validate_least_squares_system(a, b) {
     Error(e) -> Error(e)
     Ok(_) ->
-      case orthogonal.qr_householder(a) {
+      case orthogonal.householder_qr(a) {
         Error(e) -> Error(e)
         Ok(qr) -> solve_full_qr(a, b, qr)
       }
@@ -69,7 +74,7 @@ pub fn givens_qr(
   case validate_least_squares_system(a, b) {
     Error(e) -> Error(e)
     Ok(_) ->
-      case orthogonal.qr_givens(a) {
+      case orthogonal.givens_qr(a) {
         Error(e) -> Error(e)
         Ok(qr) -> solve_full_qr(a, b, qr)
       }
@@ -83,7 +88,7 @@ pub fn classical_gram_schmidt_qr(
   case validate_least_squares_system(a, b) {
     Error(e) -> Error(e)
     Ok(_) ->
-      case orthogonal.qr_classical_gram_schmidt(a) {
+      case orthogonal.classical_gram_schmidt_qr(a) {
         Error(e) -> Error(e)
         Ok(qr) -> solve_thin_qr(a, b, qr)
       }
@@ -97,7 +102,7 @@ pub fn modified_gram_schmidt_qr(
   case validate_least_squares_system(a, b) {
     Error(e) -> Error(e)
     Ok(_) ->
-      case orthogonal.qr_modified_gram_schmidt(a) {
+      case orthogonal.modified_gram_schmidt_qr(a) {
         Error(e) -> Error(e)
         Ok(qr) -> solve_thin_qr(a, b, qr)
       }
@@ -168,16 +173,12 @@ fn solve_full_qr(
   case matrix.mul_vec(qt, b) {
     Error(e) -> Error(e)
     Ok(qtb) -> {
-      let r1 = leading_square(qr.r, a.cols)
-      let c1 = leading_vector(qtb, a.cols)
+      let r1 = leading_square(qr.r, matrix.cols(a))
+      let c1 = leading_vector(qtb, matrix.cols(a))
       case direct.back_substitution(r1, c1) {
         Error(e) -> Error(e)
         Ok(x) -> {
-          let at = matrix.transpose(a)
-          case matrix.mul(at, a) {
-            Error(e) -> Error(e)
-            Ok(ata) -> finish_solution(a, b, ata, x)
-          }
+          finish_solution(a, b, x)
         }
       }
     }
@@ -196,11 +197,7 @@ fn solve_thin_qr(
       case direct.back_substitution(qr.r, qtb) {
         Error(e) -> Error(e)
         Ok(x) -> {
-          let at = matrix.transpose(a)
-          case matrix.mul(at, a) {
-            Error(e) -> Error(e)
-            Ok(ata) -> finish_solution(a, b, ata, x)
-          }
+          finish_solution(a, b, x)
         }
       }
   }
@@ -209,21 +206,11 @@ fn solve_thin_qr(
 fn finish_solution(
   a: Matrix,
   b: Vector,
-  normal_matrix: Matrix,
   x: Vector,
 ) -> Result(LeastSquaresSolution, NlaError) {
   case residual_norm(a, x, b) {
     Error(e) -> Error(e)
-    Ok(r_norm) ->
-      case error_analysis.condition_number_inf(normal_matrix) {
-        Error(e) -> Error(e)
-        Ok(condition) ->
-          Ok(LeastSquaresSolution(
-            solution: x,
-            residual_norm: r_norm,
-            normal_matrix_condition_inf: condition,
-          ))
-      }
+    Ok(r_norm) -> Ok(LeastSquaresSolution(solution: x, residual_norm: r_norm))
   }
 }
 
@@ -231,16 +218,18 @@ fn validate_least_squares_system(
   a: Matrix,
   b: Vector,
 ) -> Result(Nil, NlaError) {
-  case a.rows == b.size && a.rows >= a.cols {
+  case
+    matrix.rows(a) == vector.dimension(b) && matrix.rows(a) >= matrix.cols(a)
+  {
     True -> Ok(Nil)
     False ->
       Error(DimensionMismatch(
         expected: "m >= n and b length m",
-        actual: int.to_string(a.rows)
+        actual: int.to_string(matrix.rows(a))
           <> "x"
-          <> int.to_string(a.cols)
+          <> int.to_string(matrix.cols(a))
           <> ", b="
-          <> int.to_string(b.size),
+          <> int.to_string(vector.dimension(b)),
       ))
   }
 }
@@ -250,18 +239,22 @@ fn validate_least_squares_solution(
   b: Vector,
   x: Vector,
 ) -> Result(Nil, NlaError) {
-  case a.rows == b.size && a.cols == x.size && a.rows >= a.cols {
+  case
+    matrix.rows(a) == vector.dimension(b)
+    && matrix.cols(a) == vector.dimension(x)
+    && matrix.rows(a) >= matrix.cols(a)
+  {
     True -> Ok(Nil)
     False ->
       Error(DimensionMismatch(
         expected: "m >= n, b length m and x length n",
-        actual: int.to_string(a.rows)
+        actual: int.to_string(matrix.rows(a))
           <> "x"
-          <> int.to_string(a.cols)
+          <> int.to_string(matrix.cols(a))
           <> ", b="
-          <> int.to_string(b.size)
+          <> int.to_string(vector.dimension(b))
           <> ", x="
-          <> int.to_string(x.size),
+          <> int.to_string(vector.dimension(x)),
       ))
   }
 }
@@ -281,12 +274,6 @@ fn leading_vector(x: Vector, size: Int) -> Vector {
 }
 
 fn unsafe_vector_get(x: Vector, index: Int) -> Float {
-  let #(left, right) = list.split(x.data, at: index)
-  case right {
-    [value, ..] -> value
-    [] -> {
-      let _ = left
-      0.0
-    }
-  }
+  let assert Ok(value) = vector.get(x, index)
+  value
 }

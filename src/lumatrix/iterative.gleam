@@ -259,7 +259,7 @@ fn stationary_iteration_matrix(
   a: Matrix,
   method: StationaryMethod,
 ) -> Result(Matrix, NlaError) {
-  let assert Ok(zero_b) = vector.zeros(a.rows)
+  let assert Ok(zero_b) = vector.zeros(matrix.rows(a))
   build_stationary_columns(a, zero_b, method, 0, [])
 }
 
@@ -270,10 +270,10 @@ fn build_stationary_columns(
   j: Int,
   columns: List(Vector),
 ) -> Result(Matrix, NlaError) {
-  case j >= a.cols {
-    True -> columns_to_matrix(a.rows, a.cols, columns)
+  case j >= matrix.cols(a) {
+    True -> columns_to_matrix(matrix.rows(a), matrix.cols(a), columns)
     False ->
-      case vector.basis(a.cols, j) {
+      case vector.basis(matrix.cols(a), j) {
         Error(e) -> Error(e)
         Ok(basis) ->
           case stationary_method_step(method, a, zero_b, basis) {
@@ -418,7 +418,7 @@ fn build_stationary_step(
   use_new_values: Bool,
   transform: fn(Int, Vector, Float) -> Float,
 ) -> Result(Vector, NlaError) {
-  case i >= a.rows {
+  case i >= matrix.rows(a) {
     True -> Ok(vector.from_list(new_values))
     False -> {
       let diagonal = matrix.unsafe_get(a, i, i)
@@ -426,7 +426,7 @@ fn build_stationary_step(
         True -> Error(SingularMatrix(i))
         False -> {
           let sum =
-            list.fold(matrix.indices(a.cols), 0.0, fn(acc, j) {
+            list.fold(matrix.indices(matrix.cols(a)), 0.0, fn(acc, j) {
               case j == i {
                 True -> acc
                 False -> {
@@ -792,7 +792,7 @@ fn build_preconditioned(
   i: Int,
   values: List(Float),
 ) -> Result(Vector, NlaError) {
-  case i >= r.size {
+  case i >= vector.dimension(r) {
     True -> Ok(vector.from_list(values))
     False -> {
       let diagonal = matrix.unsafe_get(a, i, i)
@@ -812,7 +812,7 @@ fn build_preconditioned(
 
 fn validate_stationary_matrix(a: Matrix) -> Result(Nil, NlaError) {
   case matrix.is_square(a) {
-    False -> Error(NotSquare(a.rows, a.cols))
+    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
     True -> Ok(Nil)
   }
 }
@@ -836,14 +836,19 @@ fn validate_square_system(
   x: Vector,
 ) -> Result(Nil, NlaError) {
   case matrix.is_square(a) {
-    False -> Error(NotSquare(a.rows, a.cols))
+    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
     True ->
-      case a.rows == b.size && b.size == x.size {
+      case
+        matrix.rows(a) == vector.dimension(b)
+        && vector.dimension(b) == vector.dimension(x)
+      {
         True -> Ok(Nil)
         False ->
           Error(DimensionMismatch(
-            expected: int.to_string(a.rows),
-            actual: int.to_string(b.size) <> " and " <> int.to_string(x.size),
+            expected: int.to_string(matrix.rows(a)),
+            actual: int.to_string(vector.dimension(b))
+              <> " and "
+              <> int.to_string(vector.dimension(x)),
           ))
       }
   }
@@ -864,8 +869,9 @@ fn residual_norm(a: Matrix, x: Vector, b: Vector) -> Result(Float, NlaError) {
   error_analysis.residual_norm2(a, x, b)
 }
 
-fn unsafe_vector_get(vector: Vector, index: Int) -> Float {
-  unsafe_at(vector.data, index)
+fn unsafe_vector_get(values: Vector, index: Int) -> Float {
+  let assert Ok(value) = vector.get(values, index)
+  value
 }
 
 fn unsafe_at(data: List(Float), index: Int) -> Float {

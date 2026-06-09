@@ -7,3 +7,6 @@ pub type NlaError {
   ZeroNorm
   NoConvergence(iterations: Int, residual: Float)
 }
+
+pub type Error =
+  NlaError

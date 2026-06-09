@@ -5,7 +5,13 @@ import lumatrix/error.{
   type NlaError, DimensionMismatch, InvalidInput, OutOfBounds, ZeroNorm,
 }
 
-pub type Vector {
+/// A dense coordinate vector.
+///
+/// Lumatrix treats vectors as directionless coordinate arrays. In matrix-vector
+/// products such as `matrix.mul_vec(a, x)`, the vector is interpreted as the
+/// column vector `x` in `A * x`. Use `matrix.row_matrix` or
+/// `matrix.column_matrix` when an explicit 1-by-n or n-by-1 matrix is needed.
+pub opaque type Vector {
   Vector(size: Int, data: List(Float))
 }
 

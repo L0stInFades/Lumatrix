@@ -4,9 +4,13 @@ import gleam/list
 import lumatrix/error.{
   type NlaError, DimensionMismatch, InvalidInput, NotSquare, OutOfBounds,
 }
-import lumatrix/vector.{type Vector, Vector}
+import lumatrix/vector.{type Vector}
 
-pub type Matrix {
+/// A dense row-major matrix.
+///
+/// Matrix dimensions and data are validated at construction time. Use
+/// `from_rows`, `from_columns`, `from_flat`, or `from_fn` to create values.
+pub opaque type Matrix {
   Matrix(rows: Int, cols: Int, data: List(Float))
 }
 
@@ -149,30 +153,79 @@ pub fn to_rows(matrix: Matrix) -> List(List(Float)) {
   })
 }
 
+pub fn from_columns(columns: List(Vector)) -> Result(Matrix, NlaError) {
+  case columns {
+    [] -> Error(InvalidInput("matrix must have at least one column"))
+    [first, ..] -> {
+      let rows_count = vector.dimension(first)
+      case rows_count > 0 {
+        False -> Error(InvalidInput("matrix must have at least one row"))
+        True -> {
+          let rectangular =
+            list.all(columns, satisfying: fn(column) {
+              vector.dimension(column) == rows_count
+            })
+          case rectangular {
+            True ->
+              from_rows(
+                list.map(indices(rows_count), fn(i) {
+                  list.map(columns, fn(column) { unsafe_vector_get(column, i) })
+                }),
+              )
+            False ->
+              Error(InvalidInput("matrix columns must have equal length"))
+          }
+        }
+      }
+    }
+  }
+}
+
+pub fn to_columns(matrix: Matrix) -> List(Vector) {
+  list.map(indices(matrix.cols), fn(j) {
+    let assert Ok(column) = column(matrix, j)
+    column
+  })
+}
+
 pub fn row(matrix: Matrix, row_index: Int) -> Result(Vector, NlaError) {
   case row_index >= 0 && row_index < matrix.rows {
     True ->
-      Ok(Vector(
-        size: matrix.cols,
-        data: list.map(indices(matrix.cols), fn(j) {
-          unsafe_get(matrix, row_index, j)
-        }),
-      ))
+      Ok(
+        vector.from_list(
+          list.map(indices(matrix.cols), fn(j) {
+            unsafe_get(matrix, row_index, j)
+          }),
+        ),
+      )
     False -> Error(OutOfBounds(row_index, 0))
   }
 }
 
-pub fn col(matrix: Matrix, col_index: Int) -> Result(Vector, NlaError) {
+pub fn column(matrix: Matrix, col_index: Int) -> Result(Vector, NlaError) {
   case col_index >= 0 && col_index < matrix.cols {
     True ->
-      Ok(Vector(
-        size: matrix.rows,
-        data: list.map(indices(matrix.rows), fn(i) {
-          unsafe_get(matrix, i, col_index)
-        }),
-      ))
+      Ok(
+        vector.from_list(
+          list.map(indices(matrix.rows), fn(i) {
+            unsafe_get(matrix, i, col_index)
+          }),
+        ),
+      )
     False -> Error(OutOfBounds(0, col_index))
   }
+}
+
+pub fn col(matrix: Matrix, col_index: Int) -> Result(Vector, NlaError) {
+  column(matrix, col_index)
+}
+
+pub fn column_matrix(values: Vector) -> Result(Matrix, NlaError) {
+  from_columns([values])
+}
+
+pub fn row_matrix(values: Vector) -> Result(Matrix, NlaError) {
+  from_rows([vector.to_list(values)])
 }
 
 pub fn transpose(matrix: Matrix) -> Matrix {
@@ -199,23 +252,36 @@ pub fn scale(matrix: Matrix, scalar: Float) -> Matrix {
   )
 }
 
+/// Multiply a matrix by a coordinate vector, interpreting the vector as the
+/// column vector `x` in `A * x`.
 pub fn mul_vec(matrix: Matrix, x: Vector) -> Result(Vector, NlaError) {
-  case matrix.cols == x.size {
+  let x_size = vector.dimension(x)
+  case matrix.cols == x_size {
     False ->
       Error(DimensionMismatch(
         expected: int.to_string(matrix.cols),
-        actual: int.to_string(x.size),
+        actual: int.to_string(x_size),
       ))
     True ->
-      Ok(Vector(
-        size: matrix.rows,
-        data: list.map(indices(matrix.rows), fn(i) {
-          list.fold(indices(matrix.cols), 0.0, fn(acc, j) {
-            acc +. unsafe_get(matrix, i, j) *. unsafe_vector_get(x, j)
-          })
-        }),
-      ))
+      Ok(
+        vector.from_list(
+          list.map(indices(matrix.rows), fn(i) {
+            list.fold(indices(matrix.cols), 0.0, fn(acc, j) {
+              acc +. unsafe_get(matrix, i, j) *. unsafe_vector_get(x, j)
+            })
+          }),
+        ),
+      )
   }
+}
+
+/// Multiply the transpose by a coordinate vector, computing `A^T * x` without
+/// making callers spell out `matrix.mul_vec(matrix.transpose(a), x)`.
+pub fn transpose_mul_vec(
+  matrix: Matrix,
+  x: Vector,
+) -> Result(Vector, NlaError) {
+  mul_vec(transpose(matrix), x)
 }
 
 pub fn mul(a: Matrix, b: Matrix) -> Result(Matrix, NlaError) {
@@ -235,7 +301,7 @@ pub fn mul(a: Matrix, b: Matrix) -> Result(Matrix, NlaError) {
 }
 
 pub fn outer(x: Vector, y: Vector) -> Result(Matrix, NlaError) {
-  from_fn(rows: x.size, cols: y.size, with: fn(i, j) {
+  from_fn(rows: vector.dimension(x), cols: vector.dimension(y), with: fn(i, j) {
     unsafe_vector_get(x, i) *. unsafe_vector_get(y, j)
   })
 }
@@ -292,19 +358,50 @@ pub fn set_row(
   row_index: Int,
   values: Vector,
 ) -> Result(Matrix, NlaError) {
-  case row_index >= 0 && row_index < matrix.rows && values.size == matrix.cols {
-    True ->
-      from_fn(rows: matrix.rows, cols: matrix.cols, with: fn(i, j) {
-        case i == row_index {
-          True -> unsafe_vector_get(values, j)
-          False -> unsafe_get(matrix, i, j)
-        }
-      })
+  let values_size = vector.dimension(values)
+  case row_index < 0 || row_index >= matrix.rows {
+    True -> Error(OutOfBounds(row_index, 0))
     False ->
-      Error(DimensionMismatch(
-        expected: int.to_string(matrix.cols),
-        actual: int.to_string(values.size),
-      ))
+      case values_size == matrix.cols {
+        True ->
+          from_fn(rows: matrix.rows, cols: matrix.cols, with: fn(i, j) {
+            case i == row_index {
+              True -> unsafe_vector_get(values, j)
+              False -> unsafe_get(matrix, i, j)
+            }
+          })
+        False ->
+          Error(DimensionMismatch(
+            expected: int.to_string(matrix.cols),
+            actual: int.to_string(values_size),
+          ))
+      }
+  }
+}
+
+pub fn set_column(
+  matrix: Matrix,
+  col_index: Int,
+  values: Vector,
+) -> Result(Matrix, NlaError) {
+  let values_size = vector.dimension(values)
+  case col_index < 0 || col_index >= matrix.cols {
+    True -> Error(OutOfBounds(0, col_index))
+    False ->
+      case values_size == matrix.rows {
+        True ->
+          from_fn(rows: matrix.rows, cols: matrix.cols, with: fn(i, j) {
+            case j == col_index {
+              True -> unsafe_vector_get(values, i)
+              False -> unsafe_get(matrix, i, j)
+            }
+          })
+        False ->
+          Error(DimensionMismatch(
+            expected: int.to_string(matrix.rows),
+            actual: int.to_string(values_size),
+          ))
+      }
   }
 }
 
@@ -338,8 +435,15 @@ pub fn approx_equal(a: Matrix, b: Matrix, tolerance: Float) -> Bool {
   }
 }
 
+/// Get an entry without returning a `Result`.
+///
+/// Prefer `get` for user-provided indices. This function panics if the index is
+/// outside the matrix bounds.
 pub fn unsafe_get(matrix: Matrix, row: Int, col: Int) -> Float {
-  unsafe_at(matrix.data, flat_index(matrix, row, col))
+  case in_bounds(matrix, row, col) {
+    True -> unsafe_at(matrix.data, flat_index(matrix, row, col))
+    False -> panic as "matrix.unsafe_get index out of bounds"
+  }
 }
 
 pub fn indices(size: Int) -> List(Int) {
@@ -356,17 +460,15 @@ fn flat_index(matrix: Matrix, row: Int, col: Int) -> Int {
 }
 
 fn unsafe_vector_get(vector: Vector, index: Int) -> Float {
-  unsafe_at(vector.data, index)
+  let assert Ok(value) = vector.get(vector, index)
+  value
 }
 
 fn unsafe_at(data: List(Float), index: Int) -> Float {
-  let #(left, right) = list.split(data, at: index)
+  let #(_, right) = list.split(data, at: index)
   case right {
     [value, ..] -> value
-    [] -> {
-      let _ = left
-      0.0
-    }
+    [] -> panic as "matrix internal index out of bounds"
   }
 }
 

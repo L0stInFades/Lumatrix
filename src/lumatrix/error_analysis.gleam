@@ -49,6 +49,23 @@ pub fn normwise_relative_residual(
   }
 }
 
+pub fn normwise_relative_residual_inf(
+  a: Matrix,
+  x: Vector,
+  b: Vector,
+) -> Result(Float, NlaError) {
+  case residual(a, x, b) {
+    Error(e) -> Error(e)
+    Ok(r) -> {
+      let b_norm = vector.norm_inf(b)
+      case b_norm >. 0.0 {
+        True -> Ok(vector.norm_inf(r) /. b_norm)
+        False -> Error(InvalidInput("relative residual needs non-zero b"))
+      }
+    }
+  }
+}
+
 pub fn backward_error_inf(
   a: Matrix,
   x: Vector,
@@ -99,7 +116,7 @@ pub fn residual_forward_bound_inf(
   case condition_number_inf(a) {
     Error(e) -> Error(e)
     Ok(kappa) ->
-      case normwise_relative_residual(a, x, b) {
+      case normwise_relative_residual_inf(a, x, b) {
         Error(e) -> Error(e)
         Ok(relative_residual) -> Ok(kappa *. relative_residual)
       }

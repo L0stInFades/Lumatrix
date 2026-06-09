@@ -22,7 +22,13 @@ pub fn gauss_transform(
   pivot k: Int,
   row i: Int,
 ) -> Result(Matrix, NlaError) {
-  case matrix.is_square(a) && k >= 0 && k < a.rows && i >= 0 && i < a.rows {
+  case
+    matrix.is_square(a)
+    && k >= 0
+    && k < matrix.rows(a)
+    && i >= 0
+    && i < matrix.rows(a)
+  {
     False -> Error(InvalidInput("invalid Gauss transform indices"))
     True -> {
       let pivot = matrix.unsafe_get(a, k, k)
@@ -30,16 +36,20 @@ pub fn gauss_transform(
         True -> Error(SingularMatrix(k))
         False -> {
           let factor = 0.0 -. matrix.unsafe_get(a, i, k) /. pivot
-          matrix.from_fn(rows: a.rows, cols: a.cols, with: fn(row, col) {
-            case row == col {
-              True -> 1.0
-              False ->
-                case row == i && col == k {
-                  True -> factor
-                  False -> 0.0
-                }
-            }
-          })
+          matrix.from_fn(
+            rows: matrix.rows(a),
+            cols: matrix.cols(a),
+            with: fn(row, col) {
+              case row == col {
+                True -> 1.0
+                False ->
+                  case row == i && col == k {
+                    True -> factor
+                    False -> 0.0
+                  }
+              }
+            },
+          )
         }
       }
     }
@@ -48,9 +58,9 @@ pub fn gauss_transform(
 
 pub fn lu_factor(matrix a: Matrix) -> Result(LU, NlaError) {
   case matrix.is_square(a) {
-    False -> Error(NotSquare(a.rows, a.cols))
+    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
     True -> {
-      let n = a.rows
+      let n = matrix.rows(a)
       let assert Ok(l) = matrix.identity(n)
       let assert Ok(p) = matrix.identity(n)
       lu_loop(0, n, a, l, p, 0)
@@ -60,12 +70,13 @@ pub fn lu_factor(matrix a: Matrix) -> Result(LU, NlaError) {
 
 pub fn cholesky_factor(matrix a: Matrix) -> Result(Cholesky, NlaError) {
   case matrix.is_square(a) {
-    False -> Error(NotSquare(a.rows, a.cols))
+    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
     True ->
       case is_symmetric(a, pivot_tolerance) {
         False -> Error(InvalidInput("matrix must be symmetric"))
         True -> {
-          let assert Ok(l) = matrix.zeros(rows: a.rows, cols: a.cols)
+          let assert Ok(l) =
+            matrix.zeros(rows: matrix.rows(a), cols: matrix.cols(a))
           cholesky_loop(a, l, 0, 0)
         }
       }
@@ -94,11 +105,11 @@ pub fn cholesky_solve(
   factors: Cholesky,
   b: Vector,
 ) -> Result(Vector, NlaError) {
-  case factors.l.rows == b.size {
+  case matrix.rows(factors.l) == vector.dimension(b) {
     False ->
       Error(DimensionMismatch(
-        expected: int.to_string(factors.l.rows),
-        actual: int.to_string(b.size),
+        expected: int.to_string(matrix.rows(factors.l)),
+        actual: int.to_string(vector.dimension(b)),
       ))
     True ->
       case forward_substitution(factors.l, b) {
@@ -109,11 +120,11 @@ pub fn cholesky_solve(
 }
 
 pub fn lu_solve(factors: LU, b: Vector) -> Result(Vector, NlaError) {
-  case factors.l.rows == b.size {
+  case matrix.rows(factors.l) == vector.dimension(b) {
     False ->
       Error(DimensionMismatch(
-        expected: int.to_string(factors.l.rows),
-        actual: int.to_string(b.size),
+        expected: int.to_string(matrix.rows(factors.l)),
+        actual: int.to_string(vector.dimension(b)),
       ))
     True -> {
       case matrix.mul_vec(factors.p, b) {
@@ -129,24 +140,32 @@ pub fn lu_solve(factors: LU, b: Vector) -> Result(Vector, NlaError) {
 }
 
 pub fn forward_substitution(l: Matrix, b: Vector) -> Result(Vector, NlaError) {
-  case l.rows == l.cols && l.rows == b.size {
+  case
+    matrix.rows(l) == matrix.cols(l) && matrix.rows(l) == vector.dimension(b)
+  {
     False ->
       Error(DimensionMismatch(
-        expected: int.to_string(l.rows) <> "x" <> int.to_string(l.cols),
-        actual: int.to_string(b.size),
+        expected: int.to_string(matrix.rows(l))
+          <> "x"
+          <> int.to_string(matrix.cols(l)),
+        actual: int.to_string(vector.dimension(b)),
       ))
     True -> forward_loop(l, b, 0, [])
   }
 }
 
 pub fn back_substitution(u: Matrix, b: Vector) -> Result(Vector, NlaError) {
-  case u.rows == u.cols && u.rows == b.size {
+  case
+    matrix.rows(u) == matrix.cols(u) && matrix.rows(u) == vector.dimension(b)
+  {
     False ->
       Error(DimensionMismatch(
-        expected: int.to_string(u.rows) <> "x" <> int.to_string(u.cols),
-        actual: int.to_string(b.size),
+        expected: int.to_string(matrix.rows(u))
+          <> "x"
+          <> int.to_string(matrix.cols(u)),
+        actual: int.to_string(vector.dimension(b)),
       ))
-    True -> back_loop(u, b, u.rows - 1, [])
+    True -> back_loop(u, b, matrix.rows(u) - 1, [])
   }
 }
 
@@ -155,7 +174,7 @@ pub fn determinant(a: Matrix) -> Result(Float, NlaError) {
     Error(e) -> Error(e)
     Ok(factors) -> {
       let product =
-        list.fold(matrix.indices(factors.u.rows), 1.0, fn(acc, i) {
+        list.fold(matrix.indices(matrix.rows(factors.u)), 1.0, fn(acc, i) {
           acc *. matrix.unsafe_get(factors.u, i, i)
         })
       case factors.swaps % 2 == 0 {
@@ -168,11 +187,11 @@ pub fn determinant(a: Matrix) -> Result(Float, NlaError) {
 
 pub fn inverse(a: Matrix) -> Result(Matrix, NlaError) {
   case matrix.is_square(a) {
-    False -> Error(NotSquare(a.rows, a.cols))
+    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
     True -> {
       case lu_factor(a) {
         Error(e) -> Error(e)
-        Ok(factors) -> inverse_columns(factors, 0, a.rows, [])
+        Ok(factors) -> inverse_columns(factors, 0, matrix.rows(a), [])
       }
     }
   }
@@ -184,7 +203,7 @@ fn cholesky_loop(
   i: Int,
   j: Int,
 ) -> Result(Cholesky, NlaError) {
-  case i >= a.rows {
+  case i >= matrix.rows(a) {
     True -> Ok(Cholesky(l: l))
     False ->
       case j > i {
@@ -315,7 +334,7 @@ fn eliminate_below(
 
 fn swap_l_prefix(l: Matrix, a: Int, b: Int, width: Int) -> Matrix {
   let assert Ok(result) =
-    matrix.from_fn(rows: l.rows, cols: l.cols, with: fn(i, j) {
+    matrix.from_fn(rows: matrix.rows(l), cols: matrix.cols(l), with: fn(i, j) {
       case j < width {
         True ->
           case i == a {
@@ -333,7 +352,7 @@ fn swap_l_prefix(l: Matrix, a: Int, b: Int, width: Int) -> Matrix {
 }
 
 fn is_symmetric(a: Matrix, tolerance: Float) -> Bool {
-  list.all(matrix.indices(a.rows), satisfying: fn(i) {
+  list.all(matrix.indices(matrix.rows(a)), satisfying: fn(i) {
     list.all(matrix.indices(i), satisfying: fn(j) {
       float.absolute_value(
         matrix.unsafe_get(a, i, j) -. matrix.unsafe_get(a, j, i),
@@ -349,7 +368,7 @@ fn forward_loop(
   i: Int,
   solved: List(Float),
 ) -> Result(Vector, NlaError) {
-  case i >= l.rows {
+  case i >= matrix.rows(l) {
     True -> Ok(vector.from_list(solved))
     False -> {
       let diagonal = matrix.unsafe_get(l, i, i)
@@ -385,7 +404,7 @@ fn back_loop(
           let rhs = unsafe_vector_get(b, i)
           let upper_sum =
             list.fold(
-              list.drop(matrix.indices(u.rows), up_to: i + 1),
+              list.drop(matrix.indices(matrix.rows(u)), up_to: i + 1),
               0.0,
               fn(acc, j) {
                 acc
@@ -429,8 +448,9 @@ fn inverse_columns(
   }
 }
 
-fn unsafe_vector_get(vector: Vector, index: Int) -> Float {
-  unsafe_at(vector.data, index)
+fn unsafe_vector_get(values: Vector, index: Int) -> Float {
+  let assert Ok(value) = vector.get(values, index)
+  value
 }
 
 fn unsafe_vector_at(vectors: List(Vector), index: Int) -> Vector {

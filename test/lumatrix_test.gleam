@@ -2,6 +2,7 @@ import gleam/float
 import gleeunit
 import lumatrix/direct
 import lumatrix/eigen
+import lumatrix/error
 import lumatrix/error_analysis
 import lumatrix/iterative
 import lumatrix/krylov
@@ -21,8 +22,45 @@ pub fn matrix_vector_product_test() {
   let x = vector.from_list([1.0, 1.0])
 
   let assert Ok(y) = matrix.mul_vec(a, x)
+  let assert Ok(aty) = matrix.transpose_mul_vec(a, x)
 
   assert vector.approx_equal(y, vector.from_list([3.0, 7.0]), tolerance)
+  assert vector.approx_equal(aty, vector.from_list([4.0, 6.0]), tolerance)
+}
+
+pub fn matrix_column_and_orientation_helpers_test() {
+  let first = vector.from_list([1.0, 3.0])
+  let second = vector.from_list([2.0, 4.0])
+  let assert Ok(a) = matrix.from_columns([first, second])
+  let assert [first_out, second_out] = matrix.to_columns(a)
+  let assert Ok(first_column) = matrix.column(a, 0)
+  let assert Ok(first_col_alias) = matrix.col(a, 0)
+  let replacement = vector.from_list([9.0, 8.0])
+  let assert Ok(updated) = matrix.set_column(a, 1, replacement)
+  let assert Ok(column_matrix) = matrix.column_matrix(first)
+  let assert Ok(row_matrix) = matrix.row_matrix(second)
+
+  assert matrix.to_rows(a) == [[1.0, 2.0], [3.0, 4.0]]
+  assert vector.approx_equal(first_out, first, tolerance)
+  assert vector.approx_equal(second_out, second, tolerance)
+  assert vector.approx_equal(first_column, first, tolerance)
+  assert vector.approx_equal(first_col_alias, first, tolerance)
+  assert matrix.to_rows(updated) == [[1.0, 9.0], [3.0, 8.0]]
+  assert matrix.to_rows(column_matrix) == [[1.0], [3.0]]
+  assert matrix.to_rows(row_matrix) == [[2.0, 4.0]]
+
+  case matrix.set_row(a, 2, first) {
+    Error(error.OutOfBounds(2, 0)) -> Nil
+    _ -> panic as "set_row should report row bounds separately"
+  }
+  case matrix.set_column(a, 2, first) {
+    Error(error.OutOfBounds(0, 2)) -> Nil
+    _ -> panic as "set_column should report column bounds separately"
+  }
+  case matrix.set_column(a, 1, vector.from_list([1.0])) {
+    Error(error.DimensionMismatch(expected: "2", actual: "1")) -> Nil
+    _ -> panic as "set_column should report vector length mismatch"
+  }
 }
 
 pub fn lu_solve_with_partial_pivoting_test() {
@@ -79,11 +117,12 @@ pub fn givens_rotation_zeroes_second_component_test() {
 pub fn householder_qr_reconstructs_matrix_test() {
   let assert Ok(a) = matrix.from_rows([[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]])
 
-  let assert Ok(qr) = orthogonal.qr_householder(a)
+  let assert Ok(qr) = orthogonal.householder_qr(a)
   let assert Ok(reconstructed) = matrix.mul(qr.q, qr.r)
   let assert Ok(qtq) = matrix.mul(matrix.transpose(qr.q), qr.q)
   let assert Ok(identity) = matrix.identity(3)
 
+  assert qr.form == orthogonal.FullQR
   assert matrix.approx_equal(reconstructed, a, tolerance)
   assert matrix.approx_equal(qtq, identity, tolerance)
 }
@@ -91,11 +130,12 @@ pub fn householder_qr_reconstructs_matrix_test() {
 pub fn givens_qr_reconstructs_matrix_test() {
   let assert Ok(a) = matrix.from_rows([[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]])
 
-  let assert Ok(qr) = orthogonal.qr_givens(a)
+  let assert Ok(qr) = orthogonal.givens_qr(a)
   let assert Ok(reconstructed) = matrix.mul(qr.q, qr.r)
   let assert Ok(qtq) = matrix.mul(matrix.transpose(qr.q), qr.q)
   let assert Ok(identity) = matrix.identity(3)
 
+  assert qr.form == orthogonal.FullQR
   assert matrix.approx_equal(reconstructed, a, tolerance)
   assert matrix.approx_equal(qtq, identity, tolerance)
 }
@@ -103,8 +143,8 @@ pub fn givens_qr_reconstructs_matrix_test() {
 pub fn gram_schmidt_qr_reconstructs_matrix_test() {
   let assert Ok(a) = matrix.from_rows([[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]])
 
-  let assert Ok(classical) = orthogonal.qr_classical_gram_schmidt(a)
-  let assert Ok(modified) = orthogonal.qr_modified_gram_schmidt(a)
+  let assert Ok(classical) = orthogonal.classical_gram_schmidt_qr(a)
+  let assert Ok(modified) = orthogonal.modified_gram_schmidt_qr(a)
   let assert Ok(classical_reconstructed) = matrix.mul(classical.q, classical.r)
   let assert Ok(modified_reconstructed) = matrix.mul(modified.q, modified.r)
   let assert Ok(classical_qtq) =
@@ -113,6 +153,8 @@ pub fn gram_schmidt_qr_reconstructs_matrix_test() {
     matrix.mul(matrix.transpose(modified.q), modified.q)
   let assert Ok(identity) = matrix.identity(2)
 
+  assert classical.form == orthogonal.ThinQR
+  assert modified.form == orthogonal.ThinQR
   assert matrix.approx_equal(classical_reconstructed, a, tolerance)
   assert matrix.approx_equal(modified_reconstructed, a, tolerance)
   assert matrix.approx_equal(classical_qtq, identity, tolerance)
@@ -138,6 +180,31 @@ pub fn error_analysis_residual_and_condition_test() {
   assert refined_residual <. rough_residual
   assert refined.residual_norm <=. 1.0e-10
   assert vector.approx_equal(refined.solution, x, 1.0e-8)
+}
+
+pub fn ill_conditioned_forward_bound_uses_infinity_norm_test() {
+  let assert Ok(a) = matrix.from_rows([[1.0, 1.0], [1.0, 1.000001]])
+  let exact = vector.from_list([1.0, -1.0])
+  let computed = vector.from_list([1.000001, -1.0])
+  let assert Ok(b) = matrix.mul_vec(a, exact)
+
+  let assert Ok(forward) = error_analysis.forward_error_inf(exact, computed)
+  let assert Ok(relative_inf) =
+    error_analysis.normwise_relative_residual_inf(a, computed, b)
+  let assert Ok(kappa) = error_analysis.condition_number_inf(a)
+  let assert Ok(bound) =
+    error_analysis.residual_forward_bound_inf(a, computed, b)
+
+  assert relative_inf >. 0.0
+  assert close_to(bound, kappa *. relative_inf, 1.0e-6)
+  assert bound >=. forward
+
+  let assert Ok(identity) = matrix.identity(2)
+  let zero = vector.from_list([0.0, 0.0])
+  case error_analysis.normwise_relative_residual_inf(identity, zero, zero) {
+    Error(error.InvalidInput(_)) -> Nil
+    _ -> panic as "infinity-norm relative residual should reject zero b"
+  }
 }
 
 pub fn jacobi_gauss_seidel_and_sor_converge_test() {
@@ -211,11 +278,99 @@ pub fn conjugate_gradient_family_converges_test() {
   assert vector.approx_equal(pcg.solution, expected, 1.0e-8)
 }
 
+pub fn iterative_and_eigen_non_convergence_is_structured_test() {
+  let assert Ok(a) = matrix.from_rows([[2.0, 1.0], [1.0, 2.0]])
+  let b = vector.from_list([1.0, 2.0])
+  let assert Ok(initial) = vector.zeros(2)
+  let eigen_initial = vector.from_list([1.0, 2.0])
+
+  let assert Ok(jacobi) = iterative.jacobi(a, b, initial, 0, 1.0e-12)
+  let assert Ok(gauss_seidel) =
+    iterative.gauss_seidel(a, b, initial, 0, 1.0e-12)
+  let assert Ok(sor) = iterative.sor(a, b, initial, 1.1, 0, 1.0e-12)
+  let assert Ok(steepest) =
+    iterative.steepest_descent(a, b, initial, 0, 1.0e-12)
+  let assert Ok(cg) = iterative.conjugate_gradient(a, b, initial, 0, 1.0e-12)
+  let assert Ok(practical_cg) =
+    iterative.practical_conjugate_gradient(a, b, initial, 0, 1.0e-12, 2)
+  let assert Ok(pcg) =
+    iterative.preconditioned_conjugate_gradient(a, b, initial, 0, 1.0e-12)
+
+  let assert Ok(gmres) = krylov.gmres(a, b, initial, 1, 1.0e-12)
+  let assert Ok(restarted_gmres) =
+    krylov.restarted_gmres(a, b, initial, 1, 1, 1.0e-12)
+
+  let assert Ok(power) = eigen.power_method(a, eigen_initial, 0, 1.0e-12)
+  let assert Ok(inverse_power) =
+    eigen.inverse_power_method(a, eigen_initial, 0.8, 0, 1.0e-12)
+  let assert Ok(qr) = eigen.qr_iteration(a, 0, 1.0e-12)
+  let assert Ok(shifted_qr) = eigen.shifted_qr_iteration(a, 0, 1.0e-12)
+  let assert Ok(qr_history) = eigen.qr_convergence_history(a, 0, 1.0e-12)
+  let assert Ok(shifted_qr_history) =
+    eigen.shifted_qr_convergence_history(a, 0, 1.0e-12)
+  let assert Ok(symmetric_qr_history) =
+    eigen.symmetric_qr_convergence_history(a, 0, 1.0e-12)
+  let assert Ok(symmetric_qr) = eigen.symmetric_qr(a, 0, 1.0e-12)
+  let assert Ok(implicit_qr) = eigen.implicit_qr_iteration(a, 0, 1.0e-12)
+  let assert Ok(double_shift_qr) =
+    eigen.double_shift_qr_iteration(a, 0, 1.0e-12)
+  let assert Ok(symmetric_qr_eigen) = eigen.symmetric_qr_eigen(a, 0, 1.0e-12)
+  let assert Ok(jacobi_eigen) = eigen.jacobi_eigen(a, 0, 1.0e-12)
+
+  assert jacobi.converged == False
+  assert jacobi.iterations == 0
+  assert gauss_seidel.converged == False
+  assert gauss_seidel.iterations == 0
+  assert sor.converged == False
+  assert sor.iterations == 0
+  assert steepest.converged == False
+  assert steepest.iterations == 0
+  assert cg.converged == False
+  assert cg.iterations == 0
+  assert practical_cg.converged == False
+  assert practical_cg.iterations == 0
+  assert pcg.converged == False
+  assert pcg.iterations == 0
+  assert gmres.converged == False
+  assert restarted_gmres.converged == False
+  assert power.converged == False
+  assert power.iterations == 0
+  assert inverse_power.converged == False
+  assert inverse_power.iterations == 0
+  assert qr.converged == False
+  assert qr.iterations == 0
+  assert shifted_qr.converged == False
+  assert shifted_qr.iterations == 0
+  assert qr_history.result.converged == False
+  assert shifted_qr_history.result.converged == False
+  assert symmetric_qr_history.result.converged == False
+  assert symmetric_qr.converged == False
+  assert symmetric_qr.iterations == 0
+  assert implicit_qr.converged == False
+  assert implicit_qr.iterations == 0
+  assert double_shift_qr.converged == False
+  assert double_shift_qr.iterations == 0
+  assert symmetric_qr_eigen.converged == False
+  assert symmetric_qr_eigen.iterations == 0
+  assert jacobi_eigen.converged == False
+  assert jacobi_eigen.iterations == 0
+
+  let assert Ok(general) =
+    matrix.from_rows([[2.0, 1.0, 0.0], [1.0, 2.0, 1.0], [0.0, 1.0, 2.0]])
+  let assert Ok(real_schur) = eigen.real_schur_basic(general, 0, 1.0e-12)
+  assert real_schur.converged == False
+  case eigen.real_schur_eigenvalues_of(general, 0, 1.0e-12) {
+    Error(error.InvalidInput(_)) -> Nil
+    _ -> panic as "Schur eigenvalue extraction should reject non-convergence"
+  }
+}
+
 pub fn least_squares_normal_and_qr_agree_test() {
   let assert Ok(a) = matrix.from_rows([[1.0, 0.0], [1.0, 1.0], [1.0, 2.0]])
   let b = vector.from_list([1.0, 2.0, 2.0])
   let expected = vector.from_list([1.1666666666666667, 0.5])
 
+  let assert Ok(default_qr) = least_squares.solve(a, b)
   let assert Ok(normal) = least_squares.normal_equations(a, b)
   let assert Ok(qr) = least_squares.householder_qr(a, b)
   let assert Ok(givens) = least_squares.givens_qr(a, b)
@@ -224,6 +379,7 @@ pub fn least_squares_normal_and_qr_agree_test() {
   let assert Ok(diagnostics) =
     least_squares.stability_diagnostics(a, b, qr.solution)
 
+  assert vector.approx_equal(default_qr.solution, expected, 1.0e-8)
   assert vector.approx_equal(normal.solution, expected, 1.0e-8)
   assert vector.approx_equal(qr.solution, expected, 1.0e-8)
   assert vector.approx_equal(givens.solution, expected, 1.0e-8)
@@ -233,11 +389,39 @@ pub fn least_squares_normal_and_qr_agree_test() {
   assert close(normal.residual_norm, givens.residual_norm)
   assert close(normal.residual_norm, cgs.residual_norm)
   assert close(normal.residual_norm, mgs.residual_norm)
-  assert normal.normal_matrix_condition_inf >. 0.0
   assert close_to(diagnostics.residual_norm, qr.residual_norm, 1.0e-8)
   assert diagnostics.relative_residual >. 0.0
   assert diagnostics.normal_matrix_condition_inf >. 0.0
   assert diagnostics.normal_equation_residual_norm <=. 1.0e-8
+}
+
+pub fn rank_deficient_and_extreme_values_are_handled_test() {
+  let assert Ok(rank_deficient) =
+    matrix.from_rows([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]])
+  let b = vector.from_list([1.0, 2.0, 3.0])
+
+  case least_squares.normal_equations(rank_deficient, b) {
+    Error(_) -> Nil
+    _ -> panic as "normal equations should reject rank-deficient systems"
+  }
+  case least_squares.householder_qr(rank_deficient, b) {
+    Error(_) -> Nil
+    _ -> panic as "Householder QR should reject rank-deficient systems"
+  }
+  case least_squares.givens_qr(rank_deficient, b) {
+    Error(_) -> Nil
+    _ -> panic as "Givens QR should reject rank-deficient systems"
+  }
+
+  let huge = vector.from_list([1.0e150, -1.0e150])
+  let scaled = vector.scale(huge, 1.0e-150)
+  let assert Ok(diagonal) = matrix.diagonal([1.0e150, 1.0e-150])
+  let x = vector.from_list([1.0e-150, 1.0e150])
+  let assert Ok(y) = matrix.mul_vec(diagonal, x)
+
+  assert close_to(vector.norm_inf(huge), 1.0e150, 1.0e136)
+  assert vector.approx_equal(scaled, vector.from_list([1.0, -1.0]), 1.0e-12)
+  assert vector.approx_equal(y, vector.from_list([1.0, 1.0]), 1.0e-12)
 }
 
 pub fn power_and_inverse_power_methods_test() {
@@ -275,7 +459,7 @@ pub fn qr_iteration_and_hessenberg_reduction_test() {
     matrix.from_rows([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 10.0]])
   let assert Ok(reduced) = eigen.hessenberg_reduction(general)
 
-  assert close(matrix.unsafe_get(reduced.t, 2, 0), 0.0)
+  assert close(matrix.unsafe_get(reduced.h, 2, 0), 0.0)
 }
 
 pub fn shifted_qr_variants_converge_test() {
@@ -294,6 +478,15 @@ pub fn shifted_qr_variants_converge_test() {
   assert close_to(matrix.unsafe_get(symmetric.t, 1, 1), 1.0, 1.0e-6)
   assert close_to(matrix.unsafe_get(implicit.t, 1, 1), 1.0, 1.0e-6)
   assert close_to(matrix.unsafe_get(double_shift.t, 1, 1), 1.0, 1.0e-6)
+}
+
+pub fn symmetric_qr_rejects_nonsymmetric_matrix_test() {
+  let assert Ok(a) = matrix.from_rows([[1.0, 2.0], [0.0, 1.0]])
+
+  case eigen.symmetric_qr(a, 20, 1.0e-8) {
+    Error(error.InvalidInput(_)) -> Nil
+    _ -> panic as "symmetric_qr should reject nonsymmetric matrices"
+  }
 }
 
 pub fn symmetric_qr_eigen_decomposes_matrix_test() {
@@ -369,9 +562,9 @@ pub fn arnoldi_builds_krylov_relation_test() {
   let initial = vector.from_list([1.0, 1.0])
 
   let assert Ok(result) = krylov.arnoldi(a, initial, 1, 1.0e-12)
-  let assert Ok(q0) = matrix.col(result.q, 0)
+  let assert Ok(q0) = matrix.column(result.q, 0)
   let assert Ok(lhs) = matrix.mul_vec(a, q0)
-  let assert Ok(h0) = matrix.col(result.h, 0)
+  let assert Ok(h0) = matrix.column(result.h, 0)
   let assert Ok(rhs) = matrix.mul_vec(result.q, h0)
 
   assert vector.approx_equal(lhs, rhs, tolerance)
@@ -428,12 +621,16 @@ fn close_to(a: Float, b: Float, tol: Float) -> Bool {
 
 fn diagonal_matrix_from_vector(values: vector.Vector) -> matrix.Matrix {
   let assert Ok(result) =
-    matrix.from_fn(rows: values.size, cols: values.size, with: fn(i, j) {
-      case i == j {
-        True -> unsafe_vector_get(values, i)
-        False -> 0.0
-      }
-    })
+    matrix.from_fn(
+      rows: vector.dimension(values),
+      cols: vector.dimension(values),
+      with: fn(i, j) {
+        case i == j {
+          True -> unsafe_vector_get(values, i)
+          False -> 0.0
+        }
+      },
+    )
   result
 }
 

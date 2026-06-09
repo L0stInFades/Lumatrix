@@ -14,8 +14,20 @@ pub type Givens {
   Givens(c: Float, s: Float, r: Float)
 }
 
+/// Shape convention used by a QR factorization result.
+pub type QRForm {
+  /// `q` is m-by-m and `r` is m-by-n.
+  FullQR
+  /// `q` is m-by-n and `r` is n-by-n.
+  ThinQR
+}
+
+/// A QR factorization result.
+///
+/// Householder and Givens QR currently return `FullQR`; Gram-Schmidt routines
+/// return `ThinQR`.
 pub type QR {
-  QR(q: Matrix, r: Matrix)
+  QR(q: Matrix, r: Matrix, form: QRForm)
 }
 
 pub fn householder(vector x: Vector) -> Result(Householder, NlaError) {
@@ -23,7 +35,7 @@ pub fn householder(vector x: Vector) -> Result(Householder, NlaError) {
     Error(e) -> Error(e)
     Ok(a) if a <=. zero_tolerance -> Error(ZeroNorm)
     Ok(a) -> {
-      case vector.basis(x.size, 0) {
+      case vector.basis(vector.dimension(x), 0) {
         Error(e) -> Error(e)
         Ok(e1) -> {
           let target = vector.scale(e1, a)
@@ -51,7 +63,7 @@ pub fn householder_matrix(
   case householder(x) {
     Error(e) -> Error(e)
     Ok(h) -> {
-      let assert Ok(identity) = matrix.identity(x.size)
+      let assert Ok(identity) = matrix.identity(vector.dimension(x))
       case matrix.outer(h.v, h.v) {
         Error(e) -> Error(e)
         Ok(vvt) ->
@@ -118,60 +130,72 @@ pub fn apply_givens_left(
   k: Int,
   rotation: Givens,
 ) -> Result(Matrix, NlaError) {
-  case i >= 0 && k >= 0 && i < a.rows && k < a.rows && i != k {
+  case i >= 0 && k >= 0 && i < matrix.rows(a) && k < matrix.rows(a) && i != k {
     False -> Error(InvalidInput("invalid Givens rows"))
     True ->
-      matrix.from_fn(rows: a.rows, cols: a.cols, with: fn(row, col) {
-        case row == i {
-          True ->
-            rotation.c
-            *. matrix.unsafe_get(a, i, col)
-            +. rotation.s
-            *. matrix.unsafe_get(a, k, col)
-          False ->
-            case row == k {
-              True ->
-                { 0.0 -. rotation.s }
-                *. matrix.unsafe_get(a, i, col)
-                +. rotation.c
-                *. matrix.unsafe_get(a, k, col)
-              False -> matrix.unsafe_get(a, row, col)
-            }
-        }
-      })
+      matrix.from_fn(
+        rows: matrix.rows(a),
+        cols: matrix.cols(a),
+        with: fn(row, col) {
+          case row == i {
+            True ->
+              rotation.c
+              *. matrix.unsafe_get(a, i, col)
+              +. rotation.s
+              *. matrix.unsafe_get(a, k, col)
+            False ->
+              case row == k {
+                True ->
+                  { 0.0 -. rotation.s }
+                  *. matrix.unsafe_get(a, i, col)
+                  +. rotation.c
+                  *. matrix.unsafe_get(a, k, col)
+                False -> matrix.unsafe_get(a, row, col)
+              }
+          }
+        },
+      )
   }
 }
 
 pub fn qr_householder(a: Matrix) -> Result(QR, NlaError) {
-  case a.rows >= a.cols {
+  case matrix.rows(a) >= matrix.cols(a) {
     False ->
       Error(DimensionMismatch(
         expected: "rows >= columns",
         actual: "rows < columns",
       ))
     True -> {
-      let assert Ok(q0) = matrix.identity(a.rows)
-      qr_householder_loop(0, min_int(a.rows - 1, a.cols), q0, a)
+      let assert Ok(q0) = matrix.identity(matrix.rows(a))
+      qr_householder_loop(0, min_int(matrix.rows(a) - 1, matrix.cols(a)), q0, a)
     }
   }
+}
+
+pub fn householder_qr(a: Matrix) -> Result(QR, NlaError) {
+  qr_householder(a)
 }
 
 pub fn qr_givens(a: Matrix) -> Result(QR, NlaError) {
-  case a.rows >= a.cols {
+  case matrix.rows(a) >= matrix.cols(a) {
     False ->
       Error(DimensionMismatch(
         expected: "rows >= columns",
         actual: "rows < columns",
       ))
     True -> {
-      let assert Ok(q0) = matrix.identity(a.rows)
-      qr_givens_column(0, a.cols, q0, a)
+      let assert Ok(q0) = matrix.identity(matrix.rows(a))
+      qr_givens_column(0, matrix.cols(a), q0, a)
     }
   }
 }
 
+pub fn givens_qr(a: Matrix) -> Result(QR, NlaError) {
+  qr_givens(a)
+}
+
 pub fn qr_classical_gram_schmidt(a: Matrix) -> Result(QR, NlaError) {
-  case a.rows >= a.cols {
+  case matrix.rows(a) >= matrix.cols(a) {
     False ->
       Error(DimensionMismatch(
         expected: "rows >= columns",
@@ -181,8 +205,12 @@ pub fn qr_classical_gram_schmidt(a: Matrix) -> Result(QR, NlaError) {
   }
 }
 
+pub fn classical_gram_schmidt_qr(a: Matrix) -> Result(QR, NlaError) {
+  qr_classical_gram_schmidt(a)
+}
+
 pub fn qr_modified_gram_schmidt(a: Matrix) -> Result(QR, NlaError) {
-  case a.rows >= a.cols {
+  case matrix.rows(a) >= matrix.cols(a) {
     False ->
       Error(DimensionMismatch(
         expected: "rows >= columns",
@@ -192,6 +220,10 @@ pub fn qr_modified_gram_schmidt(a: Matrix) -> Result(QR, NlaError) {
   }
 }
 
+pub fn modified_gram_schmidt_qr(a: Matrix) -> Result(QR, NlaError) {
+  qr_modified_gram_schmidt(a)
+}
+
 fn qr_householder_loop(
   k: Int,
   stop: Int,
@@ -199,11 +231,11 @@ fn qr_householder_loop(
   r: Matrix,
 ) -> Result(QR, NlaError) {
   case k >= stop {
-    True -> Ok(QR(q: q, r: r))
+    True -> Ok(QR(q: q, r: r, form: FullQR))
     False -> {
       let x =
         vector.from_list(
-          list.map(list.drop(matrix.indices(r.rows), up_to: k), fn(i) {
+          list.map(list.drop(matrix.indices(matrix.rows(r)), up_to: k), fn(i) {
             matrix.unsafe_get(r, i, k)
           }),
         )
@@ -211,7 +243,7 @@ fn qr_householder_loop(
         Error(ZeroNorm) -> qr_householder_loop(k + 1, stop, q, r)
         Error(e) -> Error(e)
         Ok(#(small_h, _)) -> {
-          let h = embed_householder(r.rows, k, small_h)
+          let h = embed_householder(matrix.rows(r), k, small_h)
           case matrix.mul(h, r) {
             Error(e) -> Error(e)
             Ok(next_r) ->
@@ -232,10 +264,10 @@ fn classical_gs_loop(
   q_vectors: List(Vector),
   entries: List(#(Int, Int, Float)),
 ) -> Result(QR, NlaError) {
-  case k >= a.cols {
-    True -> build_thin_qr(a.rows, a.cols, q_vectors, entries)
+  case k >= matrix.cols(a) {
+    True -> build_thin_qr(matrix.rows(a), matrix.cols(a), q_vectors, entries)
     False -> {
-      case matrix.col(a, k) {
+      case matrix.column(a, k) {
         Error(e) -> Error(e)
         Ok(original) ->
           case
@@ -267,10 +299,10 @@ fn modified_gs_loop(
   q_vectors: List(Vector),
   entries: List(#(Int, Int, Float)),
 ) -> Result(QR, NlaError) {
-  case k >= a.cols {
-    True -> build_thin_qr(a.rows, a.cols, q_vectors, entries)
+  case k >= matrix.cols(a) {
+    True -> build_thin_qr(matrix.rows(a), matrix.cols(a), q_vectors, entries)
     False -> {
-      case matrix.col(a, k) {
+      case matrix.column(a, k) {
         Error(e) -> Error(e)
         Ok(v) ->
           case modified_orthogonalize(q_vectors, k, 0, v, entries) {
@@ -372,7 +404,7 @@ fn build_thin_qr(
     matrix.from_fn(rows: cols, cols: cols, with: fn(i, j) {
       entry_value(entries, i, j)
     })
-  Ok(QR(q: q, r: r))
+  Ok(QR(q: q, r: r, form: ThinQR))
 }
 
 fn entry_value(entries: List(#(Int, Int, Float)), row: Int, col: Int) -> Float {
@@ -394,12 +426,11 @@ fn qr_givens_column(
   r: Matrix,
 ) -> Result(QR, NlaError) {
   case col >= stop {
-    True -> Ok(QR(q: q, r: r))
+    True -> Ok(QR(q: q, r: r, form: FullQR))
     False -> {
-      case qr_givens_row(col, r.rows - 1, q, r) {
+      case qr_givens_row(col, matrix.rows(r) - 1, q, r) {
         Error(e) -> Error(e)
-        Ok(QR(q: next_q, r: next_r)) ->
-          qr_givens_column(col + 1, stop, next_q, next_r)
+        Ok(qr) -> qr_givens_column(col + 1, stop, qr.q, qr.r)
       }
     }
   }
@@ -412,7 +443,7 @@ fn qr_givens_row(
   r: Matrix,
 ) -> Result(QR, NlaError) {
   case row <= col {
-    True -> Ok(QR(q: q, r: r))
+    True -> Ok(QR(q: q, r: r, form: FullQR))
     False -> {
       let a = matrix.unsafe_get(r, col, col)
       let b = matrix.unsafe_get(r, row, col)
@@ -422,7 +453,7 @@ fn qr_givens_row(
           case apply_givens_left(r, col, row, rotation) {
             Error(e) -> Error(e)
             Ok(next_r) ->
-              case givens_matrix(r.rows, col, row, rotation) {
+              case givens_matrix(matrix.rows(r), col, row, rotation) {
                 Error(e) -> Error(e)
                 Ok(g) ->
                   case matrix.mul(q, matrix.transpose(g)) {
@@ -437,25 +468,16 @@ fn qr_givens_row(
 }
 
 fn unsafe_vector_at(vectors: List(Vector), index: Int) -> Vector {
-  let #(left, right) = list.split(vectors, at: index)
+  let #(_, right) = list.split(vectors, at: index)
   case right {
     [value, ..] -> value
-    [] -> {
-      let _ = left
-      vector.from_list([])
-    }
+    [] -> panic as "orthogonal internal vector index out of bounds"
   }
 }
 
-fn unsafe_vector_get(vector: Vector, index: Int) -> Float {
-  let #(left, right) = list.split(vector.data, at: index)
-  case right {
-    [value, ..] -> value
-    [] -> {
-      let _ = left
-      0.0
-    }
-  }
+fn unsafe_vector_get(values: Vector, index: Int) -> Float {
+  let assert Ok(value) = vector.get(values, index)
+  value
 }
 
 fn embed_householder(size: Int, offset: Int, small: Matrix) -> Matrix {

@@ -53,7 +53,7 @@ pub fn lanczos(
       case vector.normalize(initial) {
         Error(e) -> Error(e)
         Ok(q0) -> {
-          let assert Ok(q_prev) = vector.zeros(a.rows)
+          let assert Ok(q_prev) = vector.zeros(matrix.rows(a))
           lanczos_loop(a, steps, tolerance, 0, q_prev, 0.0, [q0], [])
         }
       }
@@ -132,11 +132,11 @@ fn lanczos_loop(
                       case
                         beta <=. tolerance
                         || completed_steps >= requested_steps
-                        || completed_steps >= a.rows
+                        || completed_steps >= matrix.rows(a)
                       {
                         True ->
                           build_lanczos_result(
-                            a.rows,
+                            matrix.rows(a),
                             vectors,
                             entries,
                             completed_steps,
@@ -173,8 +173,8 @@ fn arnoldi_loop(
   vectors: List(Vector),
   entries: List(#(Int, Int, Float)),
 ) -> Result(ArnoldiResult, NlaError) {
-  case k >= requested_steps || k >= a.rows {
-    True -> build_result(a.rows, vectors, entries, k, False)
+  case k >= requested_steps || k >= matrix.rows(a) {
+    True -> build_result(matrix.rows(a), vectors, entries, k, False)
     False -> {
       let qk = unsafe_vector_at(vectors, k)
       case matrix.mul_vec(a, qk) {
@@ -188,7 +188,14 @@ fn arnoldi_loop(
                 Ok(h_next) -> {
                   let entries = [#(k + 1, k, h_next), ..entries]
                   case h_next <=. tolerance {
-                    True -> build_result(a.rows, vectors, entries, k + 1, True)
+                    True ->
+                      build_result(
+                        matrix.rows(a),
+                        vectors,
+                        entries,
+                        k + 1,
+                        True,
+                      )
                     False -> {
                       let next_q = vector.scale(w, 1.0 /. h_next)
                       arnoldi_loop(
@@ -314,7 +321,7 @@ fn solve_gmres_subproblem(
   arnoldi_result: ArnoldiResult,
   beta: Float,
 ) -> Result(Vector, NlaError) {
-  let rhs = gmres_rhs(arnoldi_result.h.rows, beta)
+  let rhs = gmres_rhs(matrix.rows(arnoldi_result.h), beta)
   case least_squares.householder_qr(arnoldi_result.h, rhs) {
     Error(e) -> Error(e)
     Ok(ls) -> {
@@ -337,7 +344,7 @@ fn gmres_rhs(size: Int, beta: Float) -> Vector {
 
 fn leading_columns(q: Matrix, cols: Int) -> Matrix {
   let assert Ok(result) =
-    matrix.from_fn(rows: q.rows, cols: cols, with: fn(i, j) {
+    matrix.from_fn(rows: matrix.rows(q), cols: cols, with: fn(i, j) {
       matrix.unsafe_get(q, i, j)
     })
   result
@@ -455,8 +462,8 @@ fn validate_symmetric(
 }
 
 fn is_symmetric(a: Matrix, tolerance: Float) -> Bool {
-  list.all(matrix.indices(a.rows), satisfying: fn(i) {
-    list.all(matrix.indices(a.cols), satisfying: fn(j) {
+  list.all(matrix.indices(matrix.rows(a)), satisfying: fn(i) {
+    list.all(matrix.indices(matrix.cols(a)), satisfying: fn(j) {
       float.absolute_value(
         matrix.unsafe_get(a, i, j) -. matrix.unsafe_get(a, j, i),
       )
@@ -467,17 +474,17 @@ fn is_symmetric(a: Matrix, tolerance: Float) -> Bool {
 
 fn validate(a: Matrix, initial: Vector, steps: Int) -> Result(Nil, NlaError) {
   case matrix.is_square(a) {
-    False -> Error(NotSquare(a.rows, a.cols))
+    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
     True ->
-      case a.rows == initial.size && steps > 0 {
+      case matrix.rows(a) == vector.dimension(initial) && steps > 0 {
         True -> Ok(Nil)
         False ->
           Error(DimensionMismatch(
             expected: "square matrix dimension "
-              <> int.to_string(a.rows)
+              <> int.to_string(matrix.rows(a))
               <> " and positive steps",
             actual: "vector dimension "
-              <> int.to_string(initial.size)
+              <> int.to_string(vector.dimension(initial))
               <> ", steps "
               <> int.to_string(steps),
           ))
@@ -492,19 +499,23 @@ fn validate_system(
   max_iterations: Int,
 ) -> Result(Nil, NlaError) {
   case matrix.is_square(a) {
-    False -> Error(NotSquare(a.rows, a.cols))
+    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
     True ->
-      case a.rows == b.size && b.size == initial.size && max_iterations > 0 {
+      case
+        matrix.rows(a) == vector.dimension(b)
+        && vector.dimension(b) == vector.dimension(initial)
+        && max_iterations > 0
+      {
         True -> Ok(Nil)
         False ->
           Error(DimensionMismatch(
             expected: "square matrix dimension "
-              <> int.to_string(a.rows)
+              <> int.to_string(matrix.rows(a))
               <> ", matching vectors and positive iterations",
             actual: "b="
-              <> int.to_string(b.size)
+              <> int.to_string(vector.dimension(b))
               <> ", initial="
-              <> int.to_string(initial.size)
+              <> int.to_string(vector.dimension(initial))
               <> ", iterations="
               <> int.to_string(max_iterations),
           ))
@@ -530,13 +541,7 @@ fn unsafe_vector_at(vectors: List(Vector), index: Int) -> Vector {
   }
 }
 
-fn unsafe_vector_get(vector: Vector, index: Int) -> Float {
-  let #(left, right) = list.split(vector.data, at: index)
-  case right {
-    [value, ..] -> value
-    [] -> {
-      let _ = left
-      0.0
-    }
-  }
+fn unsafe_vector_get(values: Vector, index: Int) -> Float {
+  let assert Ok(value) = vector.get(values, index)
+  value
 }
