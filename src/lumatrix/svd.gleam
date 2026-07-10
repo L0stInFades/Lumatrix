@@ -3,7 +3,8 @@ import gleam/int
 import gleam/list
 import gleam/order
 import lumatrix/error.{
-  type NlaError, DimensionMismatch, InvalidInput, NoConvergence,
+  type NlaError, DimensionMismatch, InternalInvariant, InvalidInput,
+  NoConvergence, NonFiniteInput,
 }
 import lumatrix/matrix.{type Matrix}
 import lumatrix/numerics
@@ -62,20 +63,24 @@ pub fn decompose_with(
   case validate_options(max_sweeps, tolerance) {
     Error(e) -> Error(e)
     Ok(_) ->
-      case matrix.rows(a) >= matrix.cols(a) {
-        True -> decompose_tall(a, max_sweeps, tolerance)
-        False ->
-          case decompose_tall(matrix.transpose(a), max_sweeps, tolerance) {
-            Error(e) -> Error(e)
-            Ok(transposed) ->
-              Ok(SVD(
-                u: matrix.transpose(transposed.vt),
-                singular_values: transposed.singular_values,
-                vt: matrix.transpose(transposed.u),
-                iterations: transposed.iterations,
-                converged: transposed.converged,
-                off_diagonal_norm: transposed.off_diagonal_norm,
-              ))
+      case matrix.is_finite(a) {
+        False -> Error(NonFiniteInput("SVD matrix"))
+        True ->
+          case matrix.rows(a) >= matrix.cols(a) {
+            True -> decompose_tall(a, max_sweeps, tolerance)
+            False ->
+              case decompose_tall(matrix.transpose(a), max_sweeps, tolerance) {
+                Error(e) -> Error(e)
+                Ok(transposed) ->
+                  Ok(SVD(
+                    u: matrix.transpose(transposed.vt),
+                    singular_values: transposed.singular_values,
+                    vt: matrix.transpose(transposed.u),
+                    iterations: transposed.iterations,
+                    converged: transposed.converged,
+                    off_diagonal_norm: transposed.off_diagonal_norm,
+                  ))
+              }
           }
       }
   }
@@ -341,7 +346,7 @@ fn rotate_pair_if_needed(
     True -> Ok(#(work, v))
     False ->
       case float.square_root(product) {
-        Error(_) -> Error(InvalidInput("cannot compute Jacobi pair norm"))
+        Error(_) -> Error(InternalInvariant("Jacobi pair norm"))
         Ok(denominator) ->
           case float.absolute_value(stats.gamma) <=. tolerance *. denominator {
             True -> Ok(#(work, v))
@@ -363,12 +368,20 @@ fn rotate_pair_if_needed(
 }
 
 fn jacobi_rotation(alpha: Float, beta: Float, gamma: Float) -> #(Float, Float) {
-  let tau = { beta -. alpha } /. { 2.0 *. gamma }
-  let root = hypot_or_one(1.0, tau)
-  let denominator = float.absolute_value(tau) +. root
-  let t = case denominator <=. 0.0 {
-    True -> 0.0
-    False -> sign(tau) /. denominator
+  let delta = beta -. alpha
+  let twice_gamma = 2.0 *. gamma
+  let t = case gamma == 0.0, delta == 0.0 {
+    True, _ -> 0.0
+    False, True -> 1.0
+    False, False ->
+      case numerics.hypot(delta, twice_gamma) {
+        Error(_) -> 0.0
+        Ok(root) if root <=. 0.0 -> 0.0
+        Ok(root) ->
+          sign(delta)
+          *. { twice_gamma /. root }
+          /. { float.absolute_value(delta) /. root +. 1.0 }
+      }
   }
   let c = reciprocal_hypot(1.0, t)
   #(c, c *. t)
@@ -653,9 +666,10 @@ fn validate_options(
 }
 
 fn validate_tolerance(tolerance: Float) -> Result(Nil, NlaError) {
-  case tolerance >. 0.0 {
-    True -> Ok(Nil)
-    False -> Error(InvalidInput("tolerance must be positive"))
+  case numerics.is_finite(tolerance) {
+    False -> Error(NonFiniteInput("SVD tolerance"))
+    True if tolerance >. 0.0 -> Ok(Nil)
+    True -> Error(InvalidInput("tolerance must be positive"))
   }
 }
 
@@ -674,13 +688,6 @@ fn sign(value: Float) -> Float {
   case value <. 0.0 {
     True -> -1.0
     False -> 1.0
-  }
-}
-
-fn hypot_or_one(a: Float, b: Float) -> Float {
-  case numerics.hypot(a, b) {
-    Ok(value) -> value
-    Error(_) -> 1.0
   }
 }
 

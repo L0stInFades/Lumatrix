@@ -13,27 +13,82 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  gleam:
-    name: Format, test, and docs
+  quality:
+    name: Format, generated fixtures, and docs
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Set up Erlang
-        uses: erlef/setup-beam@v1
+      - name: Set up Erlang and Gleam
+        uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           otp-version: "27"
           gleam-version: "1.17.0"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: "24"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Install differential-test oracle
+        run: python -m pip install --disable-pip-version-check numpy==2.4.4
+
+      - name: Check formatting
+        run: |
+          gleam format --check src test
+          gleam format --check nla_weird_matrix_tests/src nla_weird_matrix_tests/test
+          gleam format --check benchmarks/src
+
+      - name: Verify NumPy/LAPACK fixtures are current
+        working-directory: nla_weird_matrix_tests
+        run: python tools/generate_weird_cases.py --check
+
       - name: Download dependencies
         run: gleam deps download
 
-      - name: Check formatting
-        run: gleam format --check src test
-
-      - name: Run tests
-        run: gleam test
-
       - name: Build docs
         run: gleam docs build
+
+  test:
+    name: ${{ matrix.target }} root and external suites
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - erlang
+          - javascript
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Erlang and Gleam
+        uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
+        with:
+          otp-version: "27"
+          gleam-version: "1.17.0"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: "24"
+
+      - name: Download root dependencies
+        run: gleam deps download
+
+      - name: Test root package
+        run: gleam test --target ${{ matrix.target }}
+
+      - name: Download external-suite dependencies
+        working-directory: nla_weird_matrix_tests
+        run: gleam deps download
+
+      - name: Test package as an external consumer
+        working-directory: nla_weird_matrix_tests
+        run: gleam test --target ${{ matrix.target }}

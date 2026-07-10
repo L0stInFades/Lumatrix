@@ -32,6 +32,10 @@ enough for lightweight numerical work inside Gleam applications and tools.
 `vector.from_list`, `vector.zeros`, or `vector.basis`; inspect dimensions with
 `matrix.rows`, `matrix.cols`, and `vector.dimension`.
 
+Dense values use target-native random-access storage internally: Erlang tuples
+and JavaScript `Float64Array`. Use `vector.try_from_list` when input data may
+contain NaN or infinity; `vector.from_list` remains unchecked for compatibility.
+
 Vectors are coordinate arrays, not separate row-vector or column-vector types.
 In `matrix.mul_vec(a, x)`, `x` is interpreted as the column vector in `A * x`.
 Use `matrix.row_matrix` or `matrix.column_matrix` when orientation needs to be
@@ -65,6 +69,10 @@ Generalized eigenvalue routines cover regular problems with invertible `B` by
 reducing `A * v = lambda * B * v` to the standard matrix `B^-1 * A` using the
 complete-pivoting direct solver, then reporting residuals against the original
 pencil.
+
+The accepted numeric domain, structured overflow/non-finite errors, and the
+small unsafe API boundary are defined in [NUMERICAL_CONTRACT.md](NUMERICAL_CONTRACT.md).
+Measured workload tiers and target support are in [SUPPORT.md](SUPPORT.md).
 
 ## Modules
 
@@ -112,20 +120,29 @@ pub fn main() -> Nil {
 
 ```sh
 gleam format --check src test
-gleam test
+gleam test --target erlang
+gleam test --target javascript
 gleam docs build
+
+cd nla_weird_matrix_tests
+python3 tools/generate_weird_cases.py --check
+gleam test --target erlang
+gleam test --target javascript
 ```
 
 ## Quality Checks
 
-The local and CI checks use the same core loop: formatting, tests, and generated
-documentation. Numerical routines are expected to expose convergence state and
-residual quality rather than hiding failure behind unchecked values.
+The local and CI checks use the same core loop: formatting, generated-fixture
+verification, both runtime targets, external-consumer tests, and documentation.
+The external suite includes deterministic randomized properties and
+NumPy/LAPACK differential oracles.
 
 ## Repository Layout
 
 - `src/lumatrix/*.gleam`: library modules.
 - `test/lumatrix_test.gleam`: unit and algorithm behavior tests.
+- `nla_weird_matrix_tests/`: external-consumer, randomized, and differential tests.
+- `benchmarks/`: reproducible cross-target benchmarks and recorded results.
 - `gleam.toml` and `manifest.toml`: package metadata and lockfile.
 - `.github/workflows/*.yml`: repository automation for checks.
 

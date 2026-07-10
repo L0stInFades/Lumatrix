@@ -2,9 +2,25 @@ name = "lumatrix"
 version = "1.0.0"
 description = "Numerically stable linear algebra kernels in pure Gleam"
 licences = ["Apache-2.0"]
+gleam = ">= 1.17.0"
 
 repository = { type = "github", user = "L0stInFades", repo = "Lumatrix" }
 links = [{ title = "GitHub", href = "https://github.com/L0stInFades/Lumatrix" }]
+
+[[documentation.pages]]
+title = "Numerical contract"
+path = "numerical-contract.html"
+source = "./NUMERICAL_CONTRACT.md"
+
+[[documentation.pages]]
+title = "Support policy"
+path = "support.html"
+source = "./SUPPORT.md"
+
+[[documentation.pages]]
+title = "Changelog"
+path = "changelog.html"
+source = "./CHANGELOG.md"
 
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"

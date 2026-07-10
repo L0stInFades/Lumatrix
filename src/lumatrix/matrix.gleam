@@ -2,8 +2,10 @@ import gleam/float
 import gleam/int
 import gleam/list
 import lumatrix/error.{
-  type NlaError, DimensionMismatch, InvalidInput, NotSquare, OutOfBounds,
+  type NlaError, ArithmeticOverflow, DimensionMismatch, InvalidInput,
+  NonFiniteInput, NotSquare, OutOfBounds,
 }
+import lumatrix/internal/storage.{type Storage}
 import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
@@ -12,7 +14,7 @@ import lumatrix/vector.{type Vector}
 /// Matrix dimensions and data are validated at construction time. Use
 /// `from_rows`, `from_columns`, `from_flat`, or `from_fn` to create values.
 pub opaque type Matrix {
-  Matrix(rows: Int, cols: Int, data: List(Float))
+  Matrix(rows: Int, cols: Int, data: Storage)
 }
 
 pub fn from_flat(
@@ -27,7 +29,15 @@ pub fn from_flat(
       let actual = list.length(data_values)
       case actual == expected {
         True ->
-          Ok(Matrix(rows: rows_count, cols: cols_count, data: data_values))
+          case list.all(data_values, satisfying: numerics.is_finite) {
+            True ->
+              Ok(Matrix(
+                rows: rows_count,
+                cols: cols_count,
+                data: storage.from_list(data_values),
+              ))
+            False -> Error(NonFiniteInput("matrix data"))
+          }
         False ->
           Error(DimensionMismatch(
             expected: int.to_string(expected),
@@ -76,13 +86,13 @@ pub fn from_fn(
   case rows_count > 0 && cols_count > 0 {
     False -> Error(InvalidInput("matrix dimensions must be positive"))
     True ->
-      Ok(Matrix(
+      from_flat(
         rows: rows_count,
         cols: cols_count,
         data: list.flat_map(indices(rows_count), fn(i) {
           list.map(indices(cols_count), fn(j) { f(i, j) })
         }),
-      ))
+      )
   }
 }
 
@@ -104,9 +114,10 @@ pub fn identity(size: Int) -> Result(Matrix, NlaError) {
 
 pub fn diagonal(values: List(Float)) -> Result(Matrix, NlaError) {
   let n = list.length(values)
+  let diagonal_values = storage.from_list(values)
   from_fn(rows: n, cols: n, with: fn(i, j) {
     case i == j {
-      True -> unsafe_at(values, i)
+      True -> storage.unsafe_get(diagonal_values, i)
       False -> 0.0
     }
   })
@@ -124,6 +135,10 @@ pub fn is_square(matrix: Matrix) -> Bool {
   matrix.rows == matrix.cols
 }
 
+pub fn is_finite(matrix: Matrix) -> Bool {
+  list.all(storage.to_list(matrix.data), satisfying: numerics.is_finite)
+}
+
 pub fn get(matrix: Matrix, row: Int, col: Int) -> Result(Float, NlaError) {
   case in_bounds(matrix, row, col) {
     True -> Ok(unsafe_get(matrix, row, col))
@@ -137,14 +152,18 @@ pub fn set(
   col: Int,
   value: Float,
 ) -> Result(Matrix, NlaError) {
-  case in_bounds(matrix, row, col) {
+  case numerics.is_finite(value) {
+    False -> Error(NonFiniteInput("matrix entry"))
     True ->
-      Ok(Matrix(
-        rows: matrix.rows,
-        cols: matrix.cols,
-        data: set_at(matrix.data, flat_index(matrix, row, col), value),
-      ))
-    False -> Error(OutOfBounds(row, col))
+      case in_bounds(matrix, row, col) {
+        True ->
+          Ok(Matrix(
+            rows: matrix.rows,
+            cols: matrix.cols,
+            data: storage.set(matrix.data, flat_index(matrix, row, col), value),
+          ))
+        False -> Error(OutOfBounds(row, col))
+      }
   }
 }
 
@@ -238,19 +257,44 @@ pub fn transpose(matrix: Matrix) -> Matrix {
 }
 
 pub fn add(a: Matrix, b: Matrix) -> Result(Matrix, NlaError) {
-  zip_with(a, b, fn(x, y) { x +. y })
+  checked_zip_with(a, b, "matrix addition", numerics.checked_add)
 }
 
 pub fn sub(a: Matrix, b: Matrix) -> Result(Matrix, NlaError) {
-  zip_with(a, b, fn(x, y) { x -. y })
+  checked_zip_with(a, b, "matrix subtraction", numerics.checked_subtract)
 }
 
 pub fn scale(matrix: Matrix, scalar: Float) -> Matrix {
   Matrix(
     rows: matrix.rows,
     cols: matrix.cols,
-    data: list.map(matrix.data, fn(x) { scalar *. x }),
+    data: storage.map(matrix.data, with: fn(x) { scalar *. x }),
   )
+}
+
+pub fn checked_scale(
+  matrix: Matrix,
+  scalar: Float,
+) -> Result(Matrix, NlaError) {
+  case numerics.is_finite(scalar) {
+    False -> Error(NonFiniteInput("matrix scale"))
+    True ->
+      checked_map(matrix, "matrix scaling", fn(value) {
+        numerics.checked_multiply(value, scalar)
+      })
+  }
+}
+
+pub fn divide(matrix: Matrix, scalar: Float) -> Result(Matrix, NlaError) {
+  case numerics.is_finite(scalar) {
+    False -> Error(NonFiniteInput("matrix divisor"))
+    True if scalar == 0.0 ->
+      Error(InvalidInput("matrix divisor must be non-zero"))
+    True ->
+      checked_map(matrix, "matrix division", fn(value) {
+        numerics.checked_divide(value, scalar)
+      })
+  }
 }
 
 /// Multiply a matrix by a coordinate vector, interpreting the vector as the
@@ -264,15 +308,23 @@ pub fn mul_vec(matrix: Matrix, x: Vector) -> Result(Vector, NlaError) {
         actual: int.to_string(x_size),
       ))
     True ->
-      Ok(
-        vector.from_list(
-          list.map(indices(matrix.rows), fn(i) {
-            numerics.compensated_sum_map(indices(matrix.cols), fn(j) {
-              unsafe_get(matrix, i, j) *. unsafe_vector_get(x, j)
+      case is_finite(matrix) && vector.is_finite(x) {
+        False -> Error(NonFiniteInput("matrix-vector product operands"))
+        True ->
+          case
+            list.try_map(indices(matrix.rows), fn(i) {
+              checked_dot_at(
+                matrix.cols,
+                fn(j) { unsafe_get(matrix, i, j) },
+                fn(j) { unsafe_vector_get(x, j) },
+                "matrix-vector product",
+              )
             })
-          }),
-        ),
-      )
+          {
+            Ok(values) -> Ok(vector.from_list(values))
+            Error(e) -> Error(e)
+          }
+      }
   }
 }
 
@@ -290,15 +342,24 @@ pub fn transpose_mul_vec(
         actual: int.to_string(x_size),
       ))
     True ->
-      Ok(
-        vector.from_list(
-          list.map(indices(matrix.cols), fn(j) {
-            numerics.compensated_sum_map(indices(matrix.rows), fn(i) {
-              unsafe_get(matrix, i, j) *. unsafe_vector_get(x, i)
+      case is_finite(matrix) && vector.is_finite(x) {
+        False ->
+          Error(NonFiniteInput("transpose matrix-vector product operands"))
+        True ->
+          case
+            list.try_map(indices(matrix.cols), fn(j) {
+              checked_dot_at(
+                matrix.rows,
+                fn(i) { unsafe_get(matrix, i, j) },
+                fn(i) { unsafe_vector_get(x, i) },
+                "transpose matrix-vector product",
+              )
             })
-          }),
-        ),
-      )
+          {
+            Ok(values) -> Ok(vector.from_list(values))
+            Error(e) -> Error(e)
+          }
+      }
   }
 }
 
@@ -310,28 +371,68 @@ pub fn mul(a: Matrix, b: Matrix) -> Result(Matrix, NlaError) {
         actual: int.to_string(b.rows),
       ))
     True ->
-      from_fn(rows: a.rows, cols: b.cols, with: fn(i, j) {
-        numerics.compensated_sum_map(indices(a.cols), fn(k) {
-          unsafe_get(a, i, k) *. unsafe_get(b, k, j)
-        })
-      })
+      case is_finite(a) && is_finite(b) {
+        False -> Error(NonFiniteInput("matrix product operands"))
+        True ->
+          case
+            list.try_map(indices(a.rows), fn(i) {
+              list.try_map(indices(b.cols), fn(j) {
+                checked_dot_at(
+                  a.cols,
+                  fn(k) { unsafe_get(a, i, k) },
+                  fn(k) { unsafe_get(b, k, j) },
+                  "matrix product",
+                )
+              })
+            })
+          {
+            Ok(rows) -> from_rows(rows)
+            Error(e) -> Error(e)
+          }
+      }
   }
 }
 
 pub fn outer(x: Vector, y: Vector) -> Result(Matrix, NlaError) {
-  from_fn(rows: vector.dimension(x), cols: vector.dimension(y), with: fn(i, j) {
-    unsafe_vector_get(x, i) *. unsafe_vector_get(y, j)
-  })
+  case vector.is_finite(x) && vector.is_finite(y) {
+    False -> Error(NonFiniteInput("outer product operands"))
+    True ->
+      case
+        list.try_map(indices(vector.dimension(x)), fn(i) {
+          list.try_map(indices(vector.dimension(y)), fn(j) {
+            case
+              numerics.checked_multiply(
+                unsafe_vector_get(x, i),
+                unsafe_vector_get(y, j),
+              )
+            {
+              Ok(value) -> Ok(value)
+              Error(_) -> Error(ArithmeticOverflow("outer product"))
+            }
+          })
+        })
+      {
+        Ok(rows) -> from_rows(rows)
+        Error(e) -> Error(e)
+      }
+  }
 }
 
 pub fn trace(matrix: Matrix) -> Result(Float, NlaError) {
   case is_square(matrix) {
     True ->
-      Ok(
-        numerics.compensated_sum_map(indices(matrix.rows), fn(i) {
-          unsafe_get(matrix, i, i)
-        }),
-      )
+      case is_finite(matrix) {
+        False -> Error(NonFiniteInput("matrix trace operand"))
+        True ->
+          case
+            numerics.checked_sum(
+              list.map(indices(matrix.rows), fn(i) { unsafe_get(matrix, i, i) }),
+            )
+          {
+            Ok(value) -> Ok(value)
+            Error(_) -> Error(ArithmeticOverflow("matrix trace"))
+          }
+      }
     False -> Error(NotSquare(matrix.rows, matrix.cols))
   }
 }
@@ -339,7 +440,7 @@ pub fn trace(matrix: Matrix) -> Result(Float, NlaError) {
 pub fn norm_inf(matrix: Matrix) -> Float {
   list.fold(indices(matrix.rows), 0.0, fn(best, i) {
     let row_sum =
-      numerics.compensated_sum_map(indices(matrix.cols), fn(j) {
+      numerics.saturating_nonnegative_sum_map(indices(matrix.cols), fn(j) {
         float.absolute_value(unsafe_get(matrix, i, j))
       })
     float.max(best, row_sum)
@@ -347,9 +448,13 @@ pub fn norm_inf(matrix: Matrix) -> Float {
 }
 
 pub fn frobenius_norm(matrix: Matrix) -> Result(Float, NlaError) {
-  case numerics.norm2(matrix.data) {
-    Ok(value) -> Ok(value)
-    Error(_) -> Error(InvalidInput("cannot take square root of norm"))
+  case is_finite(matrix) {
+    False -> Error(NonFiniteInput("matrix norm operand"))
+    True ->
+      case numerics.norm2(storage.to_list(matrix.data)) {
+        Ok(value) -> Ok(value)
+        Error(_) -> Error(ArithmeticOverflow("matrix norm"))
+      }
   }
 }
 
@@ -432,10 +537,15 @@ pub fn zip_with(
       Ok(Matrix(
         rows: a.rows,
         cols: a.cols,
-        data: list.map(list.zip(a.data, with: b.data), fn(pair) {
-          let #(x, y) = pair
-          f(x, y)
-        }),
+        data: storage.from_list(
+          list.map(
+            list.zip(storage.to_list(a.data), with: storage.to_list(b.data)),
+            fn(pair) {
+              let #(x, y) = pair
+              f(x, y)
+            },
+          ),
+        ),
       ))
     False ->
       Error(DimensionMismatch(
@@ -446,9 +556,15 @@ pub fn zip_with(
 }
 
 pub fn approx_equal(a: Matrix, b: Matrix, tolerance: Float) -> Bool {
-  case sub(a, b) {
-    Ok(delta) -> norm_inf(delta) <=. tolerance
-    Error(_) -> False
+  case a.rows == b.rows && a.cols == b.cols {
+    False -> False
+    True ->
+      list.all(
+        list.zip(storage.to_list(a.data), with: storage.to_list(b.data)),
+        satisfying: fn(pair) {
+          numerics.absolute_close(pair.0, pair.1, tolerance)
+        },
+      )
   }
 }
 
@@ -458,7 +574,7 @@ pub fn approx_equal(a: Matrix, b: Matrix, tolerance: Float) -> Bool {
 /// outside the matrix bounds.
 pub fn unsafe_get(matrix: Matrix, row: Int, col: Int) -> Float {
   case in_bounds(matrix, row, col) {
-    True -> unsafe_at(matrix.data, flat_index(matrix, row, col))
+    True -> storage.unsafe_get(matrix.data, flat_index(matrix, row, col))
     False -> panic as "matrix.unsafe_get index out of bounds"
   }
 }
@@ -466,6 +582,76 @@ pub fn unsafe_get(matrix: Matrix, row: Int, col: Int) -> Float {
 pub fn indices(size: Int) -> List(Int) {
   int.range(from: 0, to: size, with: [], run: fn(acc, i) { [i, ..acc] })
   |> list.reverse
+}
+
+fn checked_map(
+  matrix: Matrix,
+  operation: String,
+  f: fn(Float) -> Result(Float, Nil),
+) -> Result(Matrix, NlaError) {
+  case is_finite(matrix) {
+    False -> Error(NonFiniteInput(operation <> " operand"))
+    True ->
+      case list.try_map(storage.to_list(matrix.data), f) {
+        Ok(values) ->
+          Ok(Matrix(
+            rows: matrix.rows,
+            cols: matrix.cols,
+            data: storage.from_list(values),
+          ))
+        Error(_) -> Error(ArithmeticOverflow(operation))
+      }
+  }
+}
+
+fn checked_zip_with(
+  a: Matrix,
+  b: Matrix,
+  operation: String,
+  f: fn(Float, Float) -> Result(Float, Nil),
+) -> Result(Matrix, NlaError) {
+  case a.rows == b.rows && a.cols == b.cols {
+    False ->
+      Error(DimensionMismatch(
+        expected: int.to_string(a.rows) <> "x" <> int.to_string(a.cols),
+        actual: int.to_string(b.rows) <> "x" <> int.to_string(b.cols),
+      ))
+    True ->
+      case is_finite(a) && is_finite(b) {
+        False -> Error(NonFiniteInput(operation <> " operands"))
+        True ->
+          case
+            list.try_map(
+              list.zip(storage.to_list(a.data), with: storage.to_list(b.data)),
+              fn(pair) { f(pair.0, pair.1) },
+            )
+          {
+            Ok(values) ->
+              Ok(Matrix(
+                rows: a.rows,
+                cols: a.cols,
+                data: storage.from_list(values),
+              ))
+            Error(_) -> Error(ArithmeticOverflow(operation))
+          }
+      }
+  }
+}
+
+fn checked_dot_at(
+  count: Int,
+  left: fn(Int) -> Float,
+  right: fn(Int) -> Float,
+  operation: String,
+) -> Result(Float, NlaError) {
+  case
+    numerics.checked_dot_pairs(
+      list.map(indices(count), fn(index) { #(left(index), right(index)) }),
+    )
+  {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(ArithmeticOverflow(operation))
+  }
 }
 
 fn in_bounds(matrix: Matrix, row: Int, col: Int) -> Bool {
@@ -479,24 +665,4 @@ fn flat_index(matrix: Matrix, row: Int, col: Int) -> Int {
 fn unsafe_vector_get(vector: Vector, index: Int) -> Float {
   let assert Ok(value) = vector.get(vector, index)
   value
-}
-
-fn unsafe_at(data: List(Float), index: Int) -> Float {
-  let #(_, right) = list.split(data, at: index)
-  case right {
-    [value, ..] -> value
-    [] -> panic as "matrix internal index out of bounds"
-  }
-}
-
-fn set_at(data: List(Float), index: Int, value: Float) -> List(Float) {
-  case data {
-    [] -> []
-    [first, ..rest] -> {
-      case index == 0 {
-        True -> [value, ..rest]
-        False -> [first, ..set_at(rest, index - 1, value)]
-      }
-    }
-  }
 }

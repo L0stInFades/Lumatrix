@@ -3,7 +3,8 @@ import gleam/int
 import gleam/list
 import gleam/order
 import lumatrix/error.{
-  type NlaError, DimensionMismatch, InvalidInput, OutOfBounds,
+  type NlaError, ArithmeticOverflow, DimensionMismatch, InvalidInput,
+  NonFiniteInput, OutOfBounds,
 }
 import lumatrix/matrix.{type Matrix}
 import lumatrix/numerics
@@ -55,16 +56,18 @@ pub fn from_entries_with_tolerance(
         Ok(_) ->
           case validate_entries(entries, rows_count, cols_count) {
             Error(e) -> Error(e)
-            Ok(_) -> {
-              let canonical = canonical_entries(entries, drop_tolerance)
-              Ok(SparseMatrix(
-                rows: rows_count,
-                cols: cols_count,
-                row_offsets: build_row_offsets(rows_count, canonical),
-                column_indices: list.map(canonical, fn(entry) { entry.col }),
-                values: list.map(canonical, fn(entry) { entry.value }),
-              ))
-            }
+            Ok(_) ->
+              case canonical_entries(entries, drop_tolerance) {
+                Error(e) -> Error(e)
+                Ok(canonical) ->
+                  Ok(SparseMatrix(
+                    rows: rows_count,
+                    cols: cols_count,
+                    row_offsets: build_row_offsets(rows_count, canonical),
+                    column_indices: list.map(canonical, fn(entry) { entry.col }),
+                    values: list.map(canonical, fn(entry) { entry.value }),
+                  ))
+              }
           }
       }
   }
@@ -74,26 +77,30 @@ pub fn from_dense(
   matrix dense: Matrix,
   drop_tolerance drop_tolerance: Float,
 ) -> Result(SparseMatrix, NlaError) {
-  case validate_drop_tolerance(drop_tolerance) {
-    Error(e) -> Error(e)
-    Ok(_) -> {
-      let entries =
-        list.flat_map(indices(matrix.rows(dense)), fn(i) {
-          list.filter_map(indices(matrix.cols(dense)), fn(j) {
-            let value = matrix.unsafe_get(dense, i, j)
-            case float.absolute_value(value) >. drop_tolerance {
-              True -> Ok(Entry(row: i, col: j, value: value))
-              False -> Error(Nil)
-            }
-          })
-        })
-      from_entries_with_tolerance(
-        rows: matrix.rows(dense),
-        cols: matrix.cols(dense),
-        entries: entries,
-        drop_tolerance: drop_tolerance,
-      )
-    }
+  case matrix.is_finite(dense) {
+    False -> Error(NonFiniteInput("dense-to-sparse matrix"))
+    True ->
+      case validate_drop_tolerance(drop_tolerance) {
+        Error(e) -> Error(e)
+        Ok(_) -> {
+          let entries =
+            list.flat_map(indices(matrix.rows(dense)), fn(i) {
+              list.filter_map(indices(matrix.cols(dense)), fn(j) {
+                let value = matrix.unsafe_get(dense, i, j)
+                case float.absolute_value(value) >. drop_tolerance {
+                  True -> Ok(Entry(row: i, col: j, value: value))
+                  False -> Error(Nil)
+                }
+              })
+            })
+          from_entries_with_tolerance(
+            rows: matrix.rows(dense),
+            cols: matrix.cols(dense),
+            entries: entries,
+            drop_tolerance: drop_tolerance,
+          )
+        }
+      }
   }
 }
 
@@ -188,11 +195,18 @@ pub fn mul_vec(sparse: SparseMatrix, x: Vector) -> Result(Vector, NlaError) {
         actual: int.to_string(x_size),
       ))
     True ->
-      Ok(
-        vector.from_list(
-          list.map(indices(sparse.rows), fn(row) { row_dot(sparse, row, x) }),
-        ),
-      )
+      case vector.is_finite(x) {
+        False -> Error(NonFiniteInput("sparse matrix-vector operand"))
+        True ->
+          case
+            list.try_map(indices(sparse.rows), fn(row) {
+              row_dot(sparse, row, x)
+            })
+          {
+            Ok(values) -> Ok(vector.from_list(values))
+            Error(e) -> Error(e)
+          }
+      }
   }
 }
 
@@ -234,6 +248,28 @@ pub fn scale(sparse: SparseMatrix, scalar: Float) -> SparseMatrix {
   result
 }
 
+pub fn checked_scale(
+  sparse: SparseMatrix,
+  scalar: Float,
+) -> Result(SparseMatrix, NlaError) {
+  case numerics.is_finite(scalar) {
+    False -> Error(NonFiniteInput("sparse scale"))
+    True ->
+      case
+        list.try_map(to_entries(sparse), fn(entry) {
+          case numerics.checked_multiply(entry.value, scalar) {
+            Ok(value) -> Ok(Entry(row: entry.row, col: entry.col, value: value))
+            Error(_) -> Error(ArithmeticOverflow("sparse scaling"))
+          }
+        })
+      {
+        Error(e) -> Error(e)
+        Ok(entries) ->
+          from_entries(rows: sparse.rows, cols: sparse.cols, entries: entries)
+      }
+  }
+}
+
 pub fn norm_inf(sparse: SparseMatrix) -> Float {
   list.fold(indices(sparse.rows), 0.0, fn(best, row) {
     float.max(best, row_abs_sum(sparse, row))
@@ -248,9 +284,10 @@ fn validate_shape(rows_count: Int, cols_count: Int) -> Result(Nil, NlaError) {
 }
 
 fn validate_drop_tolerance(drop_tolerance: Float) -> Result(Nil, NlaError) {
-  case drop_tolerance >=. 0.0 {
-    True -> Ok(Nil)
-    False -> Error(InvalidInput("drop_tolerance must be non-negative"))
+  case numerics.is_finite(drop_tolerance) {
+    False -> Error(NonFiniteInput("sparse drop tolerance"))
+    True if drop_tolerance >=. 0.0 -> Ok(Nil)
+    True -> Error(InvalidInput("drop_tolerance must be non-negative"))
   }
 }
 
@@ -266,7 +303,11 @@ fn validate_entries(
       && entry.col >= 0
       && entry.col < cols_count
     {
-      True -> Ok(Nil)
+      True ->
+        case numerics.is_finite(entry.value) {
+          True -> Ok(Nil)
+          False -> Error(NonFiniteInput("sparse entry"))
+        }
       False -> Error(OutOfBounds(entry.row, entry.col))
     }
   })
@@ -275,7 +316,7 @@ fn validate_entries(
 fn canonical_entries(
   entries: List(Entry),
   drop_tolerance: Float,
-) -> List(Entry) {
+) -> Result(List(Entry), NlaError) {
   entries
   |> list.sort(by: compare_entries)
   |> combine_sorted_entries(drop_tolerance, [])
@@ -285,9 +326,9 @@ fn combine_sorted_entries(
   entries: List(Entry),
   drop_tolerance: Float,
   acc: List(Entry),
-) -> List(Entry) {
+) -> Result(List(Entry), NlaError) {
   case entries {
-    [] -> list.reverse(acc)
+    [] -> Ok(list.reverse(acc))
     [first, ..rest] ->
       combine_same_coordinate(
         rest,
@@ -307,23 +348,27 @@ fn combine_same_coordinate(
   sum: Float,
   drop_tolerance: Float,
   acc: List(Entry),
-) -> List(Entry) {
+) -> Result(List(Entry), NlaError) {
   case rest {
     [] -> {
       let acc = append_if_stored(acc, row, col, sum, drop_tolerance)
-      list.reverse(acc)
+      Ok(list.reverse(acc))
     }
     [next, ..tail] ->
       case next.row == row && next.col == col {
         True ->
-          combine_same_coordinate(
-            tail,
-            row,
-            col,
-            sum +. next.value,
-            drop_tolerance,
-            acc,
-          )
+          case numerics.checked_add(sum, next.value) {
+            Error(_) -> Error(ArithmeticOverflow("sparse duplicate summation"))
+            Ok(next_sum) ->
+              combine_same_coordinate(
+                tail,
+                row,
+                col,
+                next_sum,
+                drop_tolerance,
+                acc,
+              )
+          }
         False -> {
           let acc = append_if_stored(acc, row, col, sum, drop_tolerance)
           combine_sorted_entries(rest, drop_tolerance, acc)
@@ -373,19 +418,28 @@ fn row_value(
   }
 }
 
-fn row_dot(sparse: SparseMatrix, row: Int, x: Vector) -> Float {
+fn row_dot(
+  sparse: SparseMatrix,
+  row: Int,
+  x: Vector,
+) -> Result(Float, NlaError) {
   let start = unsafe_int_at(sparse.row_offsets, row)
   let stop = unsafe_int_at(sparse.row_offsets, row + 1)
-  numerics.compensated_sum_map(interval(start, stop), fn(position) {
-    let col = unsafe_int_at(sparse.column_indices, position)
-    unsafe_float_at(sparse.values, position) *. unsafe_vector_get(x, col)
-  })
+  let pairs =
+    list.map(interval(start, stop), fn(position) {
+      let col = unsafe_int_at(sparse.column_indices, position)
+      #(unsafe_float_at(sparse.values, position), unsafe_vector_get(x, col))
+    })
+  case numerics.checked_dot_pairs(pairs) {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(ArithmeticOverflow("sparse matrix-vector product"))
+  }
 }
 
 fn row_abs_sum(sparse: SparseMatrix, row: Int) -> Float {
   let start = unsafe_int_at(sparse.row_offsets, row)
   let stop = unsafe_int_at(sparse.row_offsets, row + 1)
-  numerics.compensated_sum_map(interval(start, stop), fn(position) {
+  numerics.saturating_nonnegative_sum_map(interval(start, stop), fn(position) {
     float.absolute_value(unsafe_float_at(sparse.values, position))
   })
 }

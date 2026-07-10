@@ -1,7 +1,10 @@
 import gleam/float
 import gleam/int
 import gleam/list
-import lumatrix/error.{type NlaError, DimensionMismatch, InvalidInput, NotSquare}
+import lumatrix/error.{
+  type NlaError, ArithmeticOverflow, DimensionMismatch, InvalidInput,
+  NonFiniteInput, NotSquare,
+}
 import lumatrix/error_analysis
 import lumatrix/least_squares
 import lumatrix/matrix.{type Matrix}
@@ -28,13 +31,23 @@ pub type GmresResult {
   )
 }
 
+type ScaledSystem {
+  ScaledSystem(
+    a: Matrix,
+    b: Vector,
+    initial: Vector,
+    scale: Float,
+    tolerance: Float,
+  )
+}
+
 pub fn arnoldi(
   a: Matrix,
   initial: Vector,
   steps: Int,
   tolerance: Float,
 ) -> Result(ArnoldiResult, NlaError) {
-  case validate(a, initial, steps) {
+  case validate(a, initial, steps, tolerance) {
     Error(e) -> Error(e)
     Ok(_) ->
       case vector.normalize(initial) {
@@ -50,7 +63,7 @@ pub fn lanczos(
   steps: Int,
   tolerance: Float,
 ) -> Result(LanczosResult, NlaError) {
-  case validate_symmetric(a, initial, steps, 1.0e-10) {
+  case validate_symmetric(a, initial, steps, tolerance, 1.0e-10) {
     Error(e) -> Error(e)
     Ok(_) ->
       case vector.normalize(initial) {
@@ -70,9 +83,19 @@ pub fn gmres(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(GmresResult, NlaError) {
-  case validate_system(a, b, initial, max_iterations) {
+  case prepare_system(a, b, initial, max_iterations, tolerance) {
     Error(e) -> Error(e)
-    Ok(_) -> gmres_cycle(a, b, initial, max_iterations, tolerance)
+    Ok(system) ->
+      finish_scaled_result(
+        gmres_cycle(
+          system.a,
+          system.b,
+          system.initial,
+          max_iterations,
+          system.tolerance,
+        ),
+        system.scale,
+      )
   }
 }
 
@@ -87,18 +110,21 @@ pub fn restarted_gmres(
   case restart <= 0 {
     True -> Error(InvalidInput("GMRES restart must be positive"))
     False ->
-      case validate_system(a, b, initial, max_iterations) {
+      case prepare_system(a, b, initial, max_iterations, tolerance) {
         Error(e) -> Error(e)
-        Ok(_) ->
-          restarted_gmres_loop(
-            a,
-            b,
-            initial,
-            0,
-            restart,
-            max_iterations,
-            tolerance,
-            False,
+        Ok(system) ->
+          finish_scaled_result(
+            restarted_gmres_loop(
+              system.a,
+              system.b,
+              system.initial,
+              0,
+              restart,
+              max_iterations,
+              system.tolerance,
+              False,
+            ),
+            system.scale,
           )
       }
   }
@@ -111,12 +137,24 @@ pub fn bicg(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(GmresResult, NlaError) {
-  case validate_system(a, b, initial, max_iterations) {
+  case prepare_system(a, b, initial, max_iterations, tolerance) {
     Error(e) -> Error(e)
-    Ok(_) ->
-      case error_analysis.residual(a, initial, b) {
+    Ok(system) ->
+      case error_analysis.residual(system.a, system.initial, system.b) {
         Error(e) -> Error(e)
-        Ok(r0) -> bicg_start(a, b, initial, r0, r0, max_iterations, tolerance)
+        Ok(r0) ->
+          finish_scaled_result(
+            bicg_start(
+              system.a,
+              system.b,
+              system.initial,
+              r0,
+              r0,
+              max_iterations,
+              system.tolerance,
+            ),
+            system.scale,
+          )
       }
   }
 }
@@ -129,21 +167,34 @@ pub fn bicg_with_shadow(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(GmresResult, NlaError) {
-  case validate_bicg_system(a, b, initial, shadow_residual, max_iterations) {
+  case prepare_system(a, b, initial, max_iterations, tolerance) {
     Error(e) -> Error(e)
-    Ok(_) ->
-      case error_analysis.residual(a, initial, b) {
+    Ok(system) ->
+      case
+        validate_shadow_residual(shadow_residual, vector.dimension(system.b))
+      {
         Error(e) -> Error(e)
-        Ok(r0) ->
-          bicg_start(
-            a,
-            b,
-            initial,
-            r0,
-            shadow_residual,
-            max_iterations,
-            tolerance,
-          )
+        Ok(_) ->
+          case vector.divide(shadow_residual, system.scale) {
+            Error(e) -> Error(e)
+            Ok(scaled_shadow) ->
+              case error_analysis.residual(system.a, system.initial, system.b) {
+                Error(e) -> Error(e)
+                Ok(r0) ->
+                  finish_scaled_result(
+                    bicg_start(
+                      system.a,
+                      system.b,
+                      system.initial,
+                      r0,
+                      scaled_shadow,
+                      max_iterations,
+                      system.tolerance,
+                    ),
+                    system.scale,
+                  )
+              }
+          }
       }
   }
 }
@@ -155,29 +206,32 @@ pub fn bicgstab(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(GmresResult, NlaError) {
-  case validate_system(a, b, initial, max_iterations) {
+  case prepare_system(a, b, initial, max_iterations, tolerance) {
     Error(e) -> Error(e)
-    Ok(_) ->
-      case error_analysis.residual(a, initial, b) {
+    Ok(system) ->
+      case error_analysis.residual(system.a, system.initial, system.b) {
         Error(e) -> Error(e)
         Ok(r0) ->
-          case vector.zeros(vector.dimension(b)) {
+          case vector.zeros(vector.dimension(system.b)) {
             Error(e) -> Error(e)
             Ok(zero) ->
-              bicgstab_loop(
-                a,
-                b,
-                initial,
-                r0,
-                r0,
-                zero,
-                zero,
-                1.0,
-                1.0,
-                1.0,
-                0,
-                max_iterations,
-                tolerance,
+              finish_scaled_result(
+                bicgstab_loop(
+                  system.a,
+                  system.b,
+                  system.initial,
+                  r0,
+                  r0,
+                  zero,
+                  zero,
+                  1.0,
+                  1.0,
+                  1.0,
+                  0,
+                  max_iterations,
+                  system.tolerance,
+                ),
+                system.scale,
               )
           }
       }
@@ -191,45 +245,55 @@ pub fn minres(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(GmresResult, NlaError) {
-  case validate_symmetric_system(a, b, initial, max_iterations, 1.0e-10) {
+  case prepare_system(a, b, initial, max_iterations, tolerance) {
     Error(e) -> Error(e)
-    Ok(_) ->
-      case error_analysis.residual(a, initial, b) {
-        Error(e) -> Error(e)
-        Ok(r0) ->
-          case vector.norm2(r0) {
+    Ok(system) ->
+      case is_symmetric(system.a, 1.0e-10) {
+        False -> Error(InvalidInput("MINRES matrix must be symmetric"))
+        True ->
+          case error_analysis.residual(system.a, system.initial, system.b) {
             Error(e) -> Error(e)
-            Ok(beta0) if beta0 <=. tolerance ->
-              Ok(GmresResult(
-                solution: initial,
-                iterations: 0,
-                residual_norm: beta0,
-                converged: True,
-                happy_breakdown: False,
-              ))
-            Ok(beta0) -> {
-              let assert Ok(zero) = vector.zeros(matrix.rows(a))
-              minres_short_loop(
-                a,
-                b,
-                initial,
-                r0,
-                r0,
-                beta0,
-                0.0,
-                zero,
-                zero,
-                -1.0,
-                0.0,
-                0.0,
-                0.0,
-                beta0,
-                0,
-                max_iterations,
-                tolerance,
-                False,
-              )
-            }
+            Ok(r0) ->
+              case vector.norm2(r0) {
+                Error(e) -> Error(e)
+                Ok(beta0) if beta0 <=. system.tolerance ->
+                  finish_scaled_result(
+                    Ok(GmresResult(
+                      solution: system.initial,
+                      iterations: 0,
+                      residual_norm: beta0,
+                      converged: True,
+                      happy_breakdown: False,
+                    )),
+                    system.scale,
+                  )
+                Ok(beta0) -> {
+                  let assert Ok(zero) = vector.zeros(matrix.rows(system.a))
+                  finish_scaled_result(
+                    minres_short_loop(
+                      system.a,
+                      system.b,
+                      system.initial,
+                      r0,
+                      r0,
+                      beta0,
+                      0.0,
+                      zero,
+                      zero,
+                      -1.0,
+                      0.0,
+                      0.0,
+                      0.0,
+                      beta0,
+                      0,
+                      max_iterations,
+                      system.tolerance,
+                      False,
+                    ),
+                    system.scale,
+                  )
+                }
+              }
           }
       }
   }
@@ -280,7 +344,7 @@ fn lanczos_loop(
                                 happy_breakdown,
                               )
                             False -> {
-                              let next_q = vector.scale(w, 1.0 /. beta)
+                              let assert Ok(next_q) = vector.normalize(w)
                               lanczos_loop(
                                 a,
                                 requested_steps,
@@ -826,7 +890,7 @@ fn minres_short_loop(
       case beta <=. 0.0 {
         True -> finish_solver(a, b, x, iteration, tolerance, True)
         False -> {
-          let v = vector.scale(r_curr, 1.0 /. beta)
+          let assert Ok(v) = vector.normalize(r_curr)
           case minres_lanczos_step(a, v, r_prev, beta, old_beta, iteration) {
             Error(e) -> Error(e)
             Ok(y0) ->
@@ -914,7 +978,7 @@ fn minres_rotate_and_update(
   let next_epsln = sn *. next_beta
   let next_dbar = 0.0 -. cs *. next_beta
   case numerics.hypot(gbar, next_beta) {
-    Error(_) -> Error(InvalidInput("MINRES rotation norm is invalid"))
+    Error(_) -> Error(ArithmeticOverflow("MINRES rotation norm"))
     Ok(gamma) if gamma <=. 0.0 ->
       finish_solver(a, b, x, iteration, tolerance, True)
     Ok(gamma) -> {
@@ -966,7 +1030,7 @@ fn minres_direction(
     Ok(without_older) ->
       case vector.axpy(0.0 -. delta, w_old, without_older) {
         Error(e) -> Error(e)
-        Ok(direction) -> Ok(vector.scale(direction, 1.0 /. gamma))
+        Ok(direction) -> Ok(divide_vector(direction, gamma))
       }
   }
 }
@@ -1068,7 +1132,7 @@ fn arnoldi_loop(
                         True,
                       )
                     False -> {
-                      let next_q = vector.scale(w, 1.0 /. h_next)
+                      let assert Ok(next_q) = vector.normalize(w)
                       arnoldi_loop(
                         a,
                         requested_steps,
@@ -1369,35 +1433,107 @@ fn vector_breakdown(
   }
 }
 
-fn validate_symmetric(
-  a: Matrix,
-  initial: Vector,
-  steps: Int,
-  tolerance: Float,
-) -> Result(Nil, NlaError) {
-  case validate(a, initial, steps) {
-    Error(e) -> Error(e)
-    Ok(_) ->
-      case is_symmetric(a, tolerance) {
-        True -> Ok(Nil)
-        False -> Error(InvalidInput("Lanczos matrix must be symmetric"))
-      }
-  }
-}
-
-fn validate_symmetric_system(
+fn prepare_system(
   a: Matrix,
   b: Vector,
   initial: Vector,
   max_iterations: Int,
   tolerance: Float,
+) -> Result(ScaledSystem, NlaError) {
+  case validate_system(a, b, initial, max_iterations, tolerance) {
+    Error(e) -> Error(e)
+    Ok(_) -> {
+      let raw_scale = float.max(matrix.norm_inf(a), vector.norm_inf(b))
+      let scale = case raw_scale >. 0.0 {
+        True -> raw_scale
+        False -> 1.0
+      }
+      case matrix.divide(a, scale) {
+        Error(e) -> Error(e)
+        Ok(scaled_a) ->
+          case vector.divide(b, scale) {
+            Error(e) -> Error(e)
+            Ok(scaled_b) ->
+              Ok(ScaledSystem(
+                a: scaled_a,
+                b: scaled_b,
+                initial: initial,
+                scale: scale,
+                tolerance: normalized_tolerance(tolerance, scale),
+              ))
+          }
+      }
+    }
+  }
+}
+
+fn normalized_tolerance(tolerance: Float, scale: Float) -> Float {
+  case tolerance <=. 0.0 {
+    True -> 0.0
+    False ->
+      case numerics.checked_divide(tolerance, scale) {
+        Ok(value) -> value
+        Error(_) -> numerics.largest_finite()
+      }
+  }
+}
+
+fn finish_scaled_result(
+  result: Result(GmresResult, NlaError),
+  scale: Float,
+) -> Result(GmresResult, NlaError) {
+  case result {
+    Error(e) -> Error(e)
+    Ok(value) ->
+      case vector.is_finite(value.solution) {
+        False -> Error(ArithmeticOverflow("Krylov solution"))
+        True ->
+          case numerics.checked_multiply(value.residual_norm, scale) {
+            Error(_) -> Error(ArithmeticOverflow("Krylov residual rescaling"))
+            Ok(residual_norm) ->
+              Ok(GmresResult(
+                solution: value.solution,
+                iterations: value.iterations,
+                residual_norm: residual_norm,
+                converged: value.converged,
+                happy_breakdown: value.happy_breakdown,
+              ))
+          }
+      }
+  }
+}
+
+fn validate_shadow_residual(
+  shadow_residual: Vector,
+  expected_size: Int,
 ) -> Result(Nil, NlaError) {
-  case validate_system(a, b, initial, max_iterations) {
+  case vector.dimension(shadow_residual) == expected_size {
+    False ->
+      Error(DimensionMismatch(
+        expected: "shadow residual dimension " <> int.to_string(expected_size),
+        actual: int.to_string(vector.dimension(shadow_residual)),
+      ))
+    True ->
+      case vector.is_finite(shadow_residual) {
+        True -> Ok(Nil)
+        False -> Error(NonFiniteInput("BiCG shadow residual"))
+      }
+  }
+}
+
+fn validate_symmetric(
+  a: Matrix,
+  initial: Vector,
+  steps: Int,
+  algorithm_tolerance: Float,
+  symmetry_tolerance: Float,
+) -> Result(Nil, NlaError) {
+  case validate(a, initial, steps, algorithm_tolerance) {
     Error(e) -> Error(e)
     Ok(_) ->
-      case is_symmetric(a, tolerance) {
+      case is_symmetric(a, symmetry_tolerance) {
         True -> Ok(Nil)
-        False -> Error(InvalidInput("MINRES matrix must be symmetric"))
+        False -> Error(InvalidInput("Lanczos matrix must be symmetric"))
       }
   }
 }
@@ -1413,12 +1549,16 @@ fn is_symmetric(a: Matrix, tolerance: Float) -> Bool {
   })
 }
 
-fn validate(a: Matrix, initial: Vector, steps: Int) -> Result(Nil, NlaError) {
+fn validate(
+  a: Matrix,
+  initial: Vector,
+  steps: Int,
+  tolerance: Float,
+) -> Result(Nil, NlaError) {
   case matrix.is_square(a) {
     False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
     True ->
-      case matrix.rows(a) == vector.dimension(initial) && steps > 0 {
-        True -> Ok(Nil)
+      case matrix.rows(a) == vector.dimension(initial) {
         False ->
           Error(DimensionMismatch(
             expected: "square matrix dimension "
@@ -1429,6 +1569,11 @@ fn validate(a: Matrix, initial: Vector, steps: Int) -> Result(Nil, NlaError) {
               <> ", steps "
               <> int.to_string(steps),
           ))
+        True ->
+          case matrix.is_finite(a) && vector.is_finite(initial) {
+            False -> Error(NonFiniteInput("Krylov basis inputs"))
+            True -> validate_positive_options(steps, tolerance, "steps")
+          }
       }
   }
 }
@@ -1438,6 +1583,7 @@ fn validate_system(
   b: Vector,
   initial: Vector,
   max_iterations: Int,
+  tolerance: Float,
 ) -> Result(Nil, NlaError) {
   case matrix.is_square(a) {
     False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
@@ -1445,9 +1591,7 @@ fn validate_system(
       case
         matrix.rows(a) == vector.dimension(b)
         && vector.dimension(b) == vector.dimension(initial)
-        && max_iterations > 0
       {
-        True -> Ok(Nil)
         False ->
           Error(DimensionMismatch(
             expected: "square matrix dimension "
@@ -1460,30 +1604,45 @@ fn validate_system(
               <> ", iterations="
               <> int.to_string(max_iterations),
           ))
+        True ->
+          case
+            matrix.is_finite(a)
+            && vector.is_finite(b)
+            && vector.is_finite(initial)
+          {
+            False -> Error(NonFiniteInput("Krylov linear system"))
+            True ->
+              validate_positive_options(
+                max_iterations,
+                tolerance,
+                "max_iterations",
+              )
+          }
       }
   }
 }
 
-fn validate_bicg_system(
-  a: Matrix,
-  b: Vector,
-  initial: Vector,
-  shadow_residual: Vector,
-  max_iterations: Int,
+fn validate_positive_options(
+  count: Int,
+  tolerance: Float,
+  count_name: String,
 ) -> Result(Nil, NlaError) {
-  case validate_system(a, b, initial, max_iterations) {
-    Error(e) -> Error(e)
-    Ok(_) ->
-      case vector.dimension(shadow_residual) == vector.dimension(b) {
+  case count <= 0 {
+    True -> Error(InvalidInput(count_name <> " must be positive"))
+    False ->
+      case numerics.is_finite(tolerance) {
+        False -> Error(NonFiniteInput("Krylov tolerance"))
+        True if tolerance <. 0.0 ->
+          Error(InvalidInput("tolerance must be non-negative"))
         True -> Ok(Nil)
-        False ->
-          Error(DimensionMismatch(
-            expected: "shadow residual dimension "
-              <> int.to_string(vector.dimension(b)),
-            actual: int.to_string(vector.dimension(shadow_residual)),
-          ))
       }
   }
+}
+
+fn divide_vector(values: Vector, divisor: Float) -> Vector {
+  vector.from_list(
+    list.map(vector.to_list(values), fn(value) { value /. divisor }),
+  )
 }
 
 fn min_int(a: Int, b: Int) -> Int {

@@ -9,10 +9,12 @@ import lumatrix/iterative
 import lumatrix/krylov
 import lumatrix/least_squares
 import lumatrix/matrix
+import lumatrix/numerics
 import lumatrix/orthogonal
 import lumatrix/sparse
 import lumatrix/svd
 import lumatrix/vector
+import non_finite_test_values
 
 const tolerance = 1.0e-8
 
@@ -29,6 +31,16 @@ pub fn matrix_vector_product_test() {
 
   assert vector.approx_equal(y, vector.from_list([3.0, 7.0]), tolerance)
   assert vector.approx_equal(aty, vector.from_list([4.0, 6.0]), tolerance)
+}
+
+pub fn dense_storage_preserves_structural_equality_test() {
+  let assert Ok(first_matrix) = matrix.from_rows([[1.0, 2.0], [3.0, 4.0]])
+  let assert Ok(second_matrix) = matrix.from_rows([[1.0, 2.0], [3.0, 4.0]])
+  let first_vector = vector.from_list([1.0, 2.0, 3.0])
+  let second_vector = vector.from_list([1.0, 2.0, 3.0])
+
+  assert first_matrix == second_matrix
+  assert first_vector == second_vector
 }
 
 pub fn compensated_inner_products_keep_small_terms_test() {
@@ -52,6 +64,163 @@ pub fn compensated_inner_products_keep_small_terms_test() {
     1.0e-8,
   )
   assert close_to(matrix.unsafe_get(matrix_product, 0, 0), 2.0e32, 1.0e18)
+}
+
+pub fn extreme_dot_normalization_and_matrix_norms_are_bounded_test() {
+  let positive = vector.from_list([1.0e200, 1.0e200])
+  let cancelling = vector.from_list([1.0e200, -1.0e200])
+  let subnormal = vector.from_list([1.0e-310, -1.0e-310])
+  let assert Ok(cancelled) = vector.dot(positive, cancelling)
+  let assert Ok(unit) = vector.normalize(subnormal)
+  let assert Ok(unit_norm) = vector.norm2(unit)
+  let assert Ok(overflowing_row) = matrix.from_rows([[1.0e308, 1.0e308]])
+  let assert Ok(huge_positive_matrix) = matrix.from_rows([[1.0e308]])
+  let assert Ok(huge_negative_matrix) = matrix.from_rows([[0.0 -. 1.0e308]])
+  let huge_positive = vector.from_list([1.0e308])
+  let huge_negative = vector.from_list([0.0 -. 1.0e308])
+
+  assert close_to(cancelled, 0.0, 1.0e-12)
+  assert close_to(unit_norm, 1.0, 1.0e-12)
+  assert matrix.norm_inf(overflowing_row) >=. 1.7e308
+  assert vector.approx_equal(huge_positive, huge_negative, 1.0) == False
+  assert matrix.approx_equal(huge_positive_matrix, huge_negative_matrix, 1.0)
+    == False
+  assert complex.approx_equal(
+      complex.new(real: 1.0e308, imaginary: 0.0),
+      complex.new(real: 0.0 -. 1.0e308, imaginary: 0.0),
+      1.0,
+    )
+    == False
+  case vector.dot(positive, positive) {
+    Error(error.ArithmeticOverflow(_)) -> Nil
+    _ -> panic as "an unrepresentable dot product should return an error"
+  }
+  case vector.norm2(vector.from_list([1.3e308, 1.3e308])) {
+    Error(error.ArithmeticOverflow(_)) -> Nil
+    _ -> panic as "an unrepresentable norm should return an error"
+  }
+}
+
+pub fn non_finite_inputs_return_structured_errors_test() {
+  let nan = non_finite_test_values.nan()
+  let infinity = non_finite_test_values.infinity()
+  case numerics.is_finite(nan) || numerics.is_finite(infinity) {
+    True -> Nil
+    False -> {
+      case matrix.from_rows([[1.0, infinity], [0.0, 1.0]]) {
+        Error(error.NonFiniteInput(_)) -> Nil
+        _ -> panic as "matrix constructors must reject infinity"
+      }
+      case vector.try_from_list([1.0, nan]) {
+        Error(error.NonFiniteInput(_)) -> Nil
+        _ -> panic as "checked vector construction must reject NaN"
+      }
+      case complex.try_new(real: infinity, imaginary: 0.0) {
+        Error(error.NonFiniteInput(_)) -> Nil
+        _ -> panic as "checked complex construction must reject infinity"
+      }
+      case
+        complex.vector_try_from_list([
+          complex.new(real: 1.0, imaginary: nan),
+        ])
+      {
+        Error(error.NonFiniteInput(_)) -> Nil
+        _ -> panic as "checked complex vector construction must reject NaN"
+      }
+      let assert Ok(identity) = matrix.identity(2)
+      let invalid = vector.from_list([1.0, infinity])
+      let assert Ok(initial) = vector.zeros(2)
+      case vector.dot(invalid, invalid) {
+        Error(error.NonFiniteInput(_)) -> Nil
+        _ -> panic as "dot must reject non-finite operands"
+      }
+      case iterative.conjugate_gradient(identity, invalid, initial, 2, 1.0e-8) {
+        Error(error.NonFiniteInput(_)) -> Nil
+        _ -> panic as "iterative solvers must reject non-finite systems"
+      }
+      let finite_rhs = vector.from_list([1.0, 2.0])
+      case iterative.jacobi(identity, finite_rhs, initial, 2, nan) {
+        Error(error.NonFiniteInput(_)) -> Nil
+        _ -> panic as "iterative solvers must reject NaN tolerances"
+      }
+      case krylov.gmres(identity, finite_rhs, initial, 2, infinity) {
+        Error(error.NonFiniteInput(_)) -> Nil
+        _ -> panic as "Krylov solvers must reject infinite tolerances"
+      }
+      case eigen.qr_iteration(identity, 2, nan) {
+        Error(error.NonFiniteInput(_)) -> Nil
+        _ -> panic as "eigenvalue iterations must reject NaN tolerances"
+      }
+      case svd.decompose_with(identity, 2, infinity) {
+        Error(error.NonFiniteInput(_)) -> Nil
+        _ -> panic as "SVD must reject infinite tolerances"
+      }
+      case
+        error_analysis.iterative_refinement(
+          identity,
+          finite_rhs,
+          initial,
+          2,
+          nan,
+        )
+      {
+        Error(error.NonFiniteInput(_)) -> Nil
+        _ -> panic as "iterative refinement must reject NaN tolerances"
+      }
+      case matrix.checked_scale(identity, infinity) {
+        Error(error.NonFiniteInput(_)) -> Nil
+        _ -> panic as "checked scaling must reject non-finite scalars"
+      }
+      case
+        sparse.from_entries(rows: 1, cols: 1, entries: [
+          sparse.Entry(row: 0, col: 0, value: infinity),
+        ])
+      {
+        Error(error.NonFiniteInput(_)) -> Nil
+        _ -> panic as "sparse construction must reject infinity"
+      }
+    }
+  }
+}
+
+pub fn representability_failures_return_arithmetic_overflow_test() {
+  let huge = 1.0e308
+  let huge_vector = vector.from_list([huge, huge])
+  let assert Ok(huge_matrix) = matrix.from_rows([[huge, 0.0], [0.0, huge]])
+  let assert Ok(huge_sparse) =
+    sparse.from_entries(rows: 1, cols: 1, entries: [
+      sparse.Entry(row: 0, col: 0, value: huge),
+    ])
+
+  case vector.add(huge_vector, huge_vector) {
+    Error(error.ArithmeticOverflow(_)) -> Nil
+    _ -> panic as "vector addition overflow must be structured"
+  }
+  case matrix.add(huge_matrix, huge_matrix) {
+    Error(error.ArithmeticOverflow(_)) -> Nil
+    _ -> panic as "matrix addition overflow must be structured"
+  }
+  case matrix.trace(huge_matrix) {
+    Error(error.ArithmeticOverflow(_)) -> Nil
+    _ -> panic as "trace overflow must be structured"
+  }
+  case direct.determinant(huge_matrix) {
+    Error(error.ArithmeticOverflow(_)) -> Nil
+    _ -> panic as "determinant overflow must be structured"
+  }
+  case sparse.mul_vec(huge_sparse, vector.from_list([huge])) {
+    Error(error.ArithmeticOverflow(_)) -> Nil
+    _ -> panic as "sparse product overflow must be structured"
+  }
+  case
+    sparse.from_entries(rows: 1, cols: 1, entries: [
+      sparse.Entry(row: 0, col: 0, value: huge),
+      sparse.Entry(row: 0, col: 0, value: huge),
+    ])
+  {
+    Error(error.ArithmeticOverflow(_)) -> Nil
+    _ -> panic as "sparse duplicate summation overflow must be structured"
+  }
 }
 
 pub fn matrix_column_and_orientation_helpers_test() {
@@ -230,6 +399,36 @@ pub fn complex_norms_and_division_scale_extreme_values_test() {
   assert close_to(vector_norm /. 1.0e200, root_three, 1.0e-12)
 }
 
+pub fn complex_division_and_normalization_handle_float_range_edges_test() {
+  let huge = 1.0e308
+  let numerator = complex.new(real: huge, imaginary: 0.0 -. huge)
+  let denominator = complex.new(real: huge, imaginary: huge)
+  let subnormal =
+    complex.vector_from_list([
+      complex.new(real: 1.0e-310, imaginary: 0.0),
+      complex.new(real: 0.0, imaginary: 0.0 -. 1.0e-310),
+    ])
+  let assert Ok(quotient) = complex.div(numerator, denominator)
+  let assert Ok(unit) = complex.vector_normalize(subnormal)
+  let assert Ok(unit_norm) = complex.vector_norm2(unit)
+
+  assert complex.approx_equal(
+    quotient,
+    complex.new(real: 0.0, imaginary: -1.0),
+    1.0e-12,
+  )
+  assert close_to(unit_norm, 1.0, 1.0e-12)
+  case
+    complex.div(
+      complex.new(real: huge, imaginary: 0.0),
+      complex.new(real: 1.0e-308, imaginary: 0.0),
+    )
+  {
+    Error(error.ArithmeticOverflow(_)) -> Nil
+    _ -> panic as "an unrepresentable complex quotient should return an error"
+  }
+}
+
 pub fn lu_solve_with_partial_pivoting_test() {
   let assert Ok(a) = matrix.from_rows([[0.0, 2.0], [1.0, 1.0]])
   let b = vector.from_list([4.0, 3.0])
@@ -329,6 +528,16 @@ pub fn tiny_scale_direct_solvers_are_not_marked_singular_test() {
   )
 }
 
+pub fn cholesky_symmetry_check_handles_opposite_huge_entries_test() {
+  let assert Ok(a) =
+    matrix.from_rows([[1.0e308, 0.0 -. 1.0e308], [1.0e308, 1.0e308]])
+
+  case direct.cholesky_factor(a) {
+    Error(error.InvalidInput(_)) -> Nil
+    _ -> panic as "Cholesky should reject a nonsymmetric huge matrix"
+  }
+}
+
 pub fn householder_maps_vector_to_positive_axis_test() {
   let x = vector.from_list([2.0, 1.0])
   let assert Ok(#(h, a)) = orthogonal.householder_matrix(x)
@@ -347,6 +556,25 @@ pub fn householder_avoids_large_leading_component_cancellation_test() {
   assert close_to(target_norm /. 1.0e12, 1.0, 1.0e-12)
   assert close_to(unsafe_vector_get(y, 0) /. 1.0e12, 1.0, 1.0e-12)
   assert close_to(unsafe_vector_get(y, 1), 0.0, 1.0e-4)
+}
+
+pub fn householder_handles_huge_and_tiny_representable_scales_test() {
+  let huge_scale = 1.0e200
+  let tiny_scale = 1.0e-200
+  let huge = vector.from_list([huge_scale, huge_scale])
+  let tiny = vector.from_list([tiny_scale, tiny_scale])
+  let assert Ok(#(huge_h, huge_target)) = orthogonal.householder_matrix(huge)
+  let assert Ok(#(tiny_h, tiny_target)) = orthogonal.householder_matrix(tiny)
+  let assert Ok(huge_y) = matrix.mul_vec(huge_h, huge)
+  let assert Ok(tiny_y) = matrix.mul_vec(tiny_h, tiny)
+  let assert Ok(root_two) = float.square_root(2.0)
+
+  assert close_to(huge_target /. huge_scale, root_two, 1.0e-12)
+  assert close_to(tiny_target /. tiny_scale, root_two, 1.0e-12)
+  assert close_to(unsafe_vector_get(huge_y, 0) /. huge_scale, root_two, 1.0e-12)
+  assert close_to(unsafe_vector_get(tiny_y, 0) /. tiny_scale, root_two, 1.0e-12)
+  assert close_to(unsafe_vector_get(huge_y, 1) /. huge_scale, 0.0, 1.0e-12)
+  assert close_to(unsafe_vector_get(tiny_y, 1) /. tiny_scale, 0.0, 1.0e-12)
 }
 
 pub fn givens_rotation_zeroes_second_component_test() {
@@ -600,6 +828,98 @@ pub fn conjugate_gradient_family_uses_relative_direction_checks_test() {
   assert vector.approx_equal(pcg.solution, expected, 1.0e-8)
 }
 
+pub fn all_iterative_solvers_are_globally_scale_invariant_test() {
+  assert_iterative_scale(1.0e-150, 1.0e-160)
+  assert_iterative_scale(1.0, 1.0e-10)
+  assert_iterative_scale(1.0e150, 1.0e140)
+}
+
+pub fn all_iterative_solvers_validate_iteration_options_test() {
+  let assert Ok(a) = matrix.from_rows([[4.0, 1.0], [1.0, 3.0]])
+  let b = vector.from_list([1.0, 2.0])
+  let assert Ok(initial) = vector.zeros(2)
+
+  assert_invalid_iteration(iterative.jacobi(a, b, initial, -1, 1.0e-8))
+  assert_invalid_iteration(iterative.gauss_seidel(a, b, initial, -1, 1.0e-8))
+  assert_invalid_iteration(iterative.sor(a, b, initial, 1.0, -1, 1.0e-8))
+  assert_invalid_iteration(iterative.steepest_descent(a, b, initial, -1, 1.0e-8))
+  assert_invalid_iteration(iterative.conjugate_gradient(
+    a,
+    b,
+    initial,
+    -1,
+    1.0e-8,
+  ))
+  assert_invalid_iteration(iterative.practical_conjugate_gradient(
+    a,
+    b,
+    initial,
+    -1,
+    1.0e-8,
+    2,
+  ))
+  assert_invalid_iteration(iterative.preconditioned_conjugate_gradient(
+    a,
+    b,
+    initial,
+    -1,
+    1.0e-8,
+  ))
+  assert_invalid_iteration(iterative.jacobi(a, b, initial, 10, -1.0e-8))
+}
+
+pub fn krylov_spectral_and_refinement_options_are_validated_test() {
+  let assert Ok(a) = matrix.from_rows([[4.0, 1.0], [1.0, 3.0]])
+  let assert Ok(identity) = matrix.identity(2)
+  let b = vector.from_list([1.0, 2.0])
+  let initial = vector.from_list([1.0, 1.0])
+
+  assert_invalid_input(krylov.arnoldi(a, initial, 0, 1.0e-8))
+  assert_invalid_input(krylov.lanczos(a, initial, 0, 1.0e-8))
+  assert_invalid_input(krylov.gmres(a, b, initial, 0, 1.0e-8))
+  assert_invalid_input(krylov.restarted_gmres(a, b, initial, 2, 0, 1.0e-8))
+  assert_invalid_input(krylov.bicg(a, b, initial, 0, 1.0e-8))
+  assert_invalid_input(krylov.bicg_with_shadow(a, b, initial, b, 0, 1.0e-8))
+  assert_invalid_input(krylov.bicgstab(a, b, initial, 0, 1.0e-8))
+  assert_invalid_input(krylov.minres(a, b, initial, 0, 1.0e-8))
+
+  assert_invalid_input(eigen.power_method(a, initial, -1, 1.0e-8))
+  assert_invalid_input(eigen.inverse_power_method(a, initial, 0.0, -1, 1.0e-8))
+  assert_invalid_input(eigen.qr_iteration(a, -1, 1.0e-8))
+  assert_invalid_input(eigen.shifted_qr_iteration(a, -1, 1.0e-8))
+  assert_invalid_input(eigen.qr_convergence_history(a, -1, 1.0e-8))
+  assert_invalid_input(eigen.shifted_qr_convergence_history(a, -1, 1.0e-8))
+  assert_invalid_input(eigen.symmetric_qr_convergence_history(a, -1, 1.0e-8))
+  assert_invalid_input(eigen.implicit_qr_iteration(a, -1, 1.0e-8))
+  assert_invalid_input(eigen.double_shift_qr_iteration(a, -1, 1.0e-8))
+  assert_invalid_input(eigen.symmetric_qr(a, -1, 1.0e-8))
+  assert_invalid_input(eigen.symmetric_qr_eigen(a, -1, 1.0e-8))
+  assert_invalid_input(eigen.jacobi_eigen(a, -1, 1.0e-8))
+  assert_invalid_input(eigen.real_schur_basic(a, -1, 1.0e-8))
+  assert_invalid_input(eigen.real_schur_eigenvalues_of(a, -1, 1.0e-8))
+  assert_invalid_input(eigen.complex_eigenpairs_of(a, -1, 1.0e-8))
+  assert_invalid_input(eigen.generalized_real_schur(a, identity, -1, 1.0e-8))
+  assert_invalid_input(eigen.generalized_eigenvalues(a, identity, -1, 1.0e-8))
+  assert_invalid_input(eigen.generalized_complex_eigenpairs(
+    a,
+    identity,
+    -1,
+    1.0e-8,
+  ))
+  assert_invalid_input(eigen.real_schur_blocks(a, -1.0e-8))
+  assert_invalid_input(eigen.real_schur_complex_eigenpairs(identity, a, -1.0e-8))
+
+  assert_invalid_input(svd.decompose_with(a, -1, 1.0e-8))
+  assert_invalid_input(svd.decompose_with(a, 10, -1.0e-8))
+  assert_invalid_input(error_analysis.iterative_refinement(
+    a,
+    b,
+    initial,
+    2,
+    -1.0e-8,
+  ))
+}
+
 pub fn iterative_and_eigen_non_convergence_is_structured_test() {
   let assert Ok(a) = matrix.from_rows([[2.0, 1.0], [1.0, 2.0]])
   let b = vector.from_list([1.0, 2.0])
@@ -764,6 +1084,16 @@ pub fn svd_handles_extreme_column_scales_test() {
   assert close_to(smallest /. 1.0e-150, 1.0, 1.0e-12)
 }
 
+pub fn svd_rotates_subnormal_but_representable_correlations_test() {
+  let assert Ok(a) = matrix.from_rows([[1.0, 1.0e-320], [0.0, 2.0]])
+
+  let assert Ok(result) = svd.decompose_with(a, 5, 1.0e-323)
+
+  assert result.converged
+  assert result.iterations <= 1
+  assert result.off_diagonal_norm <=. 1.0e-323
+}
+
 pub fn svd_pseudoinverse_handles_rank_deficiency_test() {
   let assert Ok(a) = matrix.from_rows([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]])
   let b = vector.from_list([1.0, 2.0, 3.0])
@@ -899,6 +1229,29 @@ pub fn shifted_qr_variants_converge_test() {
   assert close_to(matrix.unsafe_get(symmetric.t, 1, 1), 1.0, 1.0e-6)
   assert close_to(matrix.unsafe_get(implicit.t, 1, 1), 1.0, 1.0e-6)
   assert close_to(matrix.unsafe_get(double_shift.t, 1, 1), 1.0, 1.0e-6)
+}
+
+pub fn double_shift_qr_scales_subnormal_matrices_without_reciprocal_overflow_test() {
+  let scale = 1.0e-310
+  let assert Ok(a) =
+    matrix.from_rows([
+      [2.0 *. scale, 1.0 *. scale],
+      [1.0 *. scale, 3.0 *. scale],
+    ])
+
+  let assert Ok(result) = eigen.double_shift_qr_iteration(a, 20, 1.0e-323)
+
+  assert result.converged
+  assert close_to(
+    matrix.unsafe_get(result.t, 0, 0) /. scale,
+    1.381966011250105,
+    1.0e-3,
+  )
+  assert close_to(
+    matrix.unsafe_get(result.t, 1, 1) /. scale,
+    3.618033988749895,
+    1.0e-3,
+  )
 }
 
 pub fn wilkinson_shift_uses_scaled_hypotenuse_test() {
@@ -1067,6 +1420,22 @@ pub fn symmetric_tridiagonal_and_jacobi_eigen_test() {
   assert matrix.approx_equal(av, vd, 1.0e-6)
 }
 
+pub fn jacobi_eigen_preserves_subnormal_rotations_test() {
+  let scale = 1.0e-320
+  let assert Ok(a) = matrix.from_rows([[1.0, scale], [scale, 2.0]])
+
+  let assert Ok(result) = eigen.jacobi_eigen(a, 5, 1.0e-323)
+  let diagonal = diagonal_matrix_from_vector(result.diagonal)
+  let assert Ok(vd) = matrix.mul(result.eigenvectors, diagonal)
+  let assert Ok(reconstructed) =
+    matrix.mul(vd, matrix.transpose(result.eigenvectors))
+
+  assert result.converged
+  assert float.absolute_value(matrix.unsafe_get(result.eigenvectors, 0, 1))
+    >. 0.0
+  assert close_to(matrix.unsafe_get(reconstructed, 0, 1) /. scale, 1.0, 1.0e-3)
+}
+
 pub fn arnoldi_builds_krylov_relation_test() {
   let assert Ok(a) = matrix.from_rows([[2.0, 0.0], [0.0, 1.0]])
   let initial = vector.from_list([1.0, 1.0])
@@ -1131,6 +1500,26 @@ pub fn lanczos_full_dimension_uses_relative_happy_breakdown_test() {
   assert result.happy_breakdown
   assert matrix.approx_equal(aq, qt, 1.0e-5)
   assert matrix.approx_equal(qtq, identity, 1.0e-5)
+}
+
+pub fn krylov_bases_normalize_subnormal_directions_test() {
+  let scale = 1.0e-310
+  let assert Ok(a) =
+    matrix.from_rows([
+      [2.0 *. scale, 1.0 *. scale],
+      [1.0 *. scale, 3.0 *. scale],
+    ])
+  let initial = vector.from_list([1.0, 0.0])
+
+  let assert Ok(arnoldi) = krylov.arnoldi(a, initial, 1, 1.0e-323)
+  let assert Ok(lanczos) = krylov.lanczos(a, initial, 2, 1.0e-323)
+  let assert Ok(arnoldi_q1) = matrix.column(arnoldi.q, 1)
+  let assert Ok(lanczos_q1) = matrix.column(lanczos.q, 1)
+  let assert Ok(arnoldi_norm) = vector.norm2(arnoldi_q1)
+  let assert Ok(lanczos_norm) = vector.norm2(lanczos_q1)
+
+  assert close_to(arnoldi_norm, 1.0, 1.0e-12)
+  assert close_to(lanczos_norm, 1.0, 1.0e-12)
 }
 
 pub fn gmres_solves_nonsymmetric_system_test() {
@@ -1391,4 +1780,96 @@ fn assert_scaled_rotation_complex_eigenpairs(
 fn unsafe_vector_get(values: vector.Vector, index: Int) -> Float {
   let assert Ok(value) = vector.get(values, index)
   value
+}
+
+fn assert_iterative_scale(scale: Float, scaled_tolerance: Float) -> Nil {
+  let assert Ok(a) =
+    matrix.from_rows([
+      [4.0 *. scale, 1.0 *. scale],
+      [1.0 *. scale, 3.0 *. scale],
+    ])
+  let b = vector.from_list([1.0 *. scale, 2.0 *. scale])
+  let assert Ok(initial) = vector.zeros(2)
+  let expected = vector.from_list([0.09090909090909091, 0.6363636363636364])
+
+  let assert Ok(jacobi) = iterative.jacobi(a, b, initial, 100, scaled_tolerance)
+  let assert Ok(gauss_seidel) =
+    iterative.gauss_seidel(a, b, initial, 100, scaled_tolerance)
+  let assert Ok(sor) = iterative.sor(a, b, initial, 1.0, 100, scaled_tolerance)
+  let assert Ok(steepest) =
+    iterative.steepest_descent(a, b, initial, 100, scaled_tolerance)
+  let assert Ok(cg) =
+    iterative.conjugate_gradient(a, b, initial, 10, scaled_tolerance)
+  let assert Ok(practical) =
+    iterative.practical_conjugate_gradient(
+      a,
+      b,
+      initial,
+      10,
+      scaled_tolerance,
+      2,
+    )
+  let assert Ok(pcg) =
+    iterative.preconditioned_conjugate_gradient(
+      a,
+      b,
+      initial,
+      10,
+      scaled_tolerance,
+    )
+  let assert Ok(gmres) = krylov.gmres(a, b, initial, 10, scaled_tolerance)
+  let assert Ok(restarted_gmres) =
+    krylov.restarted_gmres(a, b, initial, 2, 10, scaled_tolerance)
+  let assert Ok(bicg) = krylov.bicg(a, b, initial, 10, scaled_tolerance)
+  let assert Ok(shadow_bicg) =
+    krylov.bicg_with_shadow(a, b, initial, b, 10, scaled_tolerance)
+  let assert Ok(bicgstab) = krylov.bicgstab(a, b, initial, 10, scaled_tolerance)
+  let assert Ok(minres) = krylov.minres(a, b, initial, 10, scaled_tolerance)
+
+  assert jacobi.converged
+  assert gauss_seidel.converged
+  assert sor.converged
+  assert steepest.converged
+  assert cg.converged
+  assert practical.converged
+  assert pcg.converged
+  assert gmres.converged
+  assert restarted_gmres.converged
+  assert bicg.converged
+  assert shadow_bicg.converged
+  assert bicgstab.converged
+  assert minres.converged
+  assert vector.approx_equal(jacobi.solution, expected, 1.0e-7)
+  assert vector.approx_equal(gauss_seidel.solution, expected, 1.0e-7)
+  assert vector.approx_equal(sor.solution, expected, 1.0e-7)
+  assert vector.approx_equal(steepest.solution, expected, 1.0e-5)
+  assert vector.approx_equal(cg.solution, expected, 1.0e-8)
+  assert vector.approx_equal(practical.solution, expected, 1.0e-8)
+  assert vector.approx_equal(pcg.solution, expected, 1.0e-8)
+  assert vector.approx_equal(gmres.solution, expected, 1.0e-8)
+  assert vector.approx_equal(restarted_gmres.solution, expected, 1.0e-8)
+  assert vector.approx_equal(bicg.solution, expected, 1.0e-8)
+  assert vector.approx_equal(shadow_bicg.solution, expected, 1.0e-8)
+  assert vector.approx_equal(bicgstab.solution, expected, 1.0e-8)
+  assert vector.approx_equal(minres.solution, expected, 1.0e-8)
+  assert jacobi.residual_norm <=. scaled_tolerance
+  assert cg.residual_norm <=. scaled_tolerance
+  assert gmres.residual_norm <=. scaled_tolerance
+  assert minres.residual_norm <=. scaled_tolerance
+}
+
+fn assert_invalid_iteration(
+  result: Result(iterative.IterationResult, error.NlaError),
+) -> Nil {
+  case result {
+    Error(error.InvalidInput(_)) -> Nil
+    _ -> panic as "invalid iterative options must return InvalidInput"
+  }
+}
+
+fn assert_invalid_input(result: Result(value, error.NlaError)) -> Nil {
+  case result {
+    Error(error.InvalidInput(_)) -> Nil
+    _ -> panic as "invalid algorithm options must return InvalidInput"
+  }
 }

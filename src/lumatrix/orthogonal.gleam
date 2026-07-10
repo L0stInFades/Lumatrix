@@ -1,5 +1,8 @@
 import gleam/list
-import lumatrix/error.{type NlaError, DimensionMismatch, InvalidInput, ZeroNorm}
+import lumatrix/error.{
+  type NlaError, ArithmeticOverflow, DimensionMismatch, InvalidInput,
+  NonFiniteInput, ZeroNorm,
+}
 import lumatrix/matrix.{type Matrix}
 import lumatrix/numerics
 import lumatrix/vector.{type Vector}
@@ -66,10 +69,14 @@ pub fn apply_householder(
 }
 
 pub fn givens(a: Float, b: Float) -> Result(Givens, NlaError) {
-  case numerics.hypot(a, b) {
-    Error(_) -> Error(InvalidInput("cannot compute Givens radius"))
-    Ok(r) if r <=. 0.0 -> Ok(Givens(c: 1.0, s: 0.0, r: 0.0))
-    Ok(r) -> Ok(Givens(c: a /. r, s: b /. r, r: r))
+  case numerics.is_finite(a) && numerics.is_finite(b) {
+    False -> Error(NonFiniteInput("Givens operands"))
+    True ->
+      case numerics.hypot(a, b) {
+        Error(_) -> Error(ArithmeticOverflow("Givens radius"))
+        Ok(r) if r <=. 0.0 -> Ok(Givens(c: 1.0, s: 0.0, r: 0.0))
+        Ok(r) -> Ok(Givens(c: a /. r, s: b /. r, r: r))
+      }
   }
 }
 
@@ -362,10 +369,11 @@ fn finish_gs_column(
   case vector.norm2(v) {
     Error(e) -> Error(e)
     Ok(rkk) if rkk <=. 0.0 -> Error(ZeroNorm)
-    Ok(rkk) -> {
-      let qk = vector.scale(v, 1.0 /. rkk)
-      Ok(#(list.append(q_vectors, [qk]), [#(k, k, rkk), ..entries]))
-    }
+    Ok(rkk) ->
+      case vector.normalize(v) {
+        Error(e) -> Error(e)
+        Ok(qk) -> Ok(#(list.append(q_vectors, [qk]), [#(k, k, rkk), ..entries]))
+      }
   }
 }
 
@@ -480,40 +488,49 @@ fn householder_from_values(
 ) -> Result(Householder, NlaError) {
   case values {
     [] -> Error(ZeroNorm)
-    [first, ..tail] -> {
-      let v =
-        vector.from_list([
-          stable_householder_head(first, tail, target_norm),
-          ..tail
-        ])
-      case vector.dot(v, v) {
-        Error(e) -> Error(e)
-        Ok(denom) if denom <=. 0.0 ->
+    [first, ..tail] ->
+      case numerics.norm2(tail) {
+        Error(_) -> Error(ArithmeticOverflow("Householder direction"))
+        Ok(tail_norm) if first >. 0.0 && tail_norm <=. 0.0 ->
           case vector.basis(list.length(values), 0) {
             Error(e) -> Error(e)
             Ok(e1) ->
               Ok(Householder(v: e1, beta: 0.0, target_norm: target_norm))
           }
-        Ok(denom) ->
-          Ok(Householder(v: v, beta: 2.0 /. denom, target_norm: target_norm))
+        Ok(tail_norm) -> {
+          let direction = case first >. 0.0 {
+            True -> [
+              0.0
+                -. { tail_norm /. target_norm }
+                /. { 1.0 +. first /. target_norm },
+              ..list.map(tail, fn(value) { value /. tail_norm })
+            ]
+            False -> [
+              first /. target_norm -. 1.0,
+              ..list.map(tail, fn(value) { value /. target_norm })
+            ]
+          }
+          normalized_householder(direction, target_norm)
+        }
       }
-    }
   }
 }
 
-fn stable_householder_head(
-  first: Float,
-  tail: List(Float),
-  norm: Float,
-) -> Float {
-  case first >. 0.0 {
-    False -> first -. norm
-    True ->
-      case numerics.norm2(tail) {
-        Error(_) -> first -. norm
-        Ok(tail_norm) if tail_norm <=. 0.0 -> 0.0
-        Ok(tail_norm) -> 0.0 -. tail_norm *. { tail_norm /. { first +. norm } }
-      }
+fn normalized_householder(
+  direction: List(Float),
+  target_norm: Float,
+) -> Result(Householder, NlaError) {
+  case numerics.norm2(direction) {
+    Error(_) -> Error(ArithmeticOverflow("Householder normalization"))
+    Ok(direction_norm) if direction_norm <=. 0.0 -> Error(ZeroNorm)
+    Ok(direction_norm) ->
+      Ok(Householder(
+        v: vector.from_list(
+          list.map(direction, fn(value) { value /. direction_norm }),
+        ),
+        beta: 2.0,
+        target_norm: target_norm,
+      ))
   }
 }
 
