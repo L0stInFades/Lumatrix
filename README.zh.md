@@ -28,6 +28,10 @@ Lumatrix 是一个纯 Gleam 编写的数值线性代数库。它关注小而可�
 `vector.from_list`、`vector.zeros` 或 `vector.basis` 创建值；通过
 `matrix.rows`、`matrix.cols` 和 `vector.dimension` 查看形状。
 
+稠密值内部使用目标原生的随机访问存储：Erlang tuple 与 JavaScript
+`Float64Array`。输入可能包含 NaN 或 Infinity 时请使用 `vector.try_from_list`；
+`vector.from_list` 为兼容旧 API 保持不检查。
+
 向量在这里是坐标数组，不区分行向量和列向量。`matrix.mul_vec(a, x)` 中的 `x`
 按 `A * x` 里的列向量理解。如果需要显式表达方向，可以使用 `matrix.row_matrix`
 或 `matrix.column_matrix`。
@@ -54,6 +58,10 @@ SVD 使用 one-sided Jacobi 迭代，不通过显式构造 `A^T A` 来求奇异�
 
 广义特征值例程覆盖 `B` 可逆的 regular problem：先用完全主元直接法把
 `A * v = lambda * B * v` 化为标准矩阵 `B^-1 * A`，再按原始 pencil 回算残差。
+
+可接受数值域、非有限值/溢出的结构化错误以及 unsafe 边界见
+[NUMERICAL_CONTRACT.md](NUMERICAL_CONTRACT.md)；实测工作负载档位和目标支持见
+[SUPPORT.md](SUPPORT.md)。
 
 ## 模块
 
@@ -96,19 +104,27 @@ pub fn main() -> Nil {
 
 ```sh
 gleam format --check src test
-gleam test
+gleam test --target erlang
+gleam test --target javascript
 gleam docs build
+
+cd nla_weird_matrix_tests
+python3 tools/generate_weird_cases.py --check
+gleam test --target erlang
+gleam test --target javascript
 ```
 
 ## 质量检查
 
-本地和 CI 使用同一组核心检查：格式、测试和生成文档。数值例程应暴露收敛状态
-和残差质量，不把失败隐藏在未经检查的返回值里。
+本地和 CI 使用同一组核心检查：格式、生成 fixture 校验、双运行时、外部消费者测试
+和生成文档。外部套件包含确定性随机性质测试及 NumPy/LAPACK 差分 oracle。
 
 ## 仓库组织
 
 - `src/lumatrix/*.gleam`：库代码。
 - `test/lumatrix_test.gleam`：单元测试和算法行为测试。
+- `nla_weird_matrix_tests/`：外部消费者、随机性质和差分测试。
+- `benchmarks/`：可复现的跨目标基准与实测结果。
 - `gleam.toml` 和 `manifest.toml`：包元数据和锁文件。
 - `.github/workflows/*.yml`：仓库自动化检查。
 

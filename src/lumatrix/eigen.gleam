@@ -4,14 +4,19 @@ import gleam/list
 import lumatrix/complex
 import lumatrix/direct
 import lumatrix/error.{
-  type NlaError, DimensionMismatch, InvalidInput, NoConvergence, NotSquare,
-  ZeroNorm,
+  type NlaError, DimensionMismatch, InvalidInput, NoConvergence, NonFiniteInput,
+  NotSquare, ZeroNorm,
 }
 import lumatrix/matrix.{type Matrix}
+import lumatrix/numerics
 import lumatrix/orthogonal
 import lumatrix/vector.{type Vector}
 
 const small = 1.0e-12
+
+const large_float = 1.0e308
+
+const sqrt_large_float = 1.0e154
 
 pub type Eigenpair {
   Eigenpair(
@@ -69,6 +74,15 @@ pub type SchurBlock {
   )
 }
 
+type SchurBlockStats {
+  SchurBlockStats(
+    trace: Float,
+    determinant: Float,
+    scaled_discriminant_quarter: Float,
+    discriminant_scale: Float,
+  )
+}
+
 pub type SymmetricEigenResult {
   SymmetricEigenResult(
     eigenvectors: Matrix,
@@ -84,14 +98,16 @@ pub fn power_method(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(Eigenpair, NlaError) {
-  case validate_square_vector(a, initial) {
-    Error(e) -> Error(e)
-    Ok(_) ->
-      case vector.normalize(initial) {
-        Error(e) -> Error(e)
-        Ok(x0) -> power_loop(a, x0, 0, max_iterations, tolerance)
-      }
-  }
+  checked_iteration(max_iterations, tolerance, fn() {
+    case validate_square_vector(a, initial) {
+      Error(e) -> Error(e)
+      Ok(_) ->
+        case vector.normalize(initial) {
+          Error(e) -> Error(e)
+          Ok(x0) -> power_loop(a, x0, 0, max_iterations, tolerance)
+        }
+    }
+  })
 }
 
 pub fn inverse_power_method(
@@ -101,22 +117,28 @@ pub fn inverse_power_method(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(Eigenpair, NlaError) {
-  case validate_square_vector(a, initial) {
-    Error(e) -> Error(e)
-    Ok(_) ->
-      case vector.normalize(initial) {
-        Error(e) -> Error(e)
-        Ok(x0) ->
-          inverse_power_loop(
-            a,
-            shifted(a, shift),
-            x0,
-            0,
-            max_iterations,
-            tolerance,
-          )
-      }
-  }
+  checked_iteration(max_iterations, tolerance, fn() {
+    case numerics.is_finite(shift) {
+      False -> Error(NonFiniteInput("inverse power shift"))
+      True ->
+        case validate_square_vector(a, initial) {
+          Error(e) -> Error(e)
+          Ok(_) ->
+            case vector.normalize(initial) {
+              Error(e) -> Error(e)
+              Ok(x0) ->
+                inverse_power_loop(
+                  a,
+                  shifted(a, shift),
+                  x0,
+                  0,
+                  max_iterations,
+                  tolerance,
+                )
+            }
+        }
+    }
+  })
 }
 
 pub fn qr_iteration(
@@ -124,13 +146,10 @@ pub fn qr_iteration(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(SchurResult, NlaError) {
-  case matrix.is_square(a) {
-    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
-    True -> {
-      let assert Ok(q0) = matrix.identity(matrix.rows(a))
-      qr_loop(a, q0, 0, max_iterations, tolerance, fn(_t) { 0.0 })
-    }
-  }
+  checked_square_iteration(a, max_iterations, tolerance, fn(a) {
+    let assert Ok(q0) = matrix.identity(matrix.rows(a))
+    qr_loop(a, q0, 0, max_iterations, tolerance, fn(_t) { 0.0 })
+  })
 }
 
 pub fn shifted_qr_iteration(
@@ -138,13 +157,10 @@ pub fn shifted_qr_iteration(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(SchurResult, NlaError) {
-  case matrix.is_square(a) {
-    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
-    True -> {
-      let assert Ok(q0) = matrix.identity(matrix.rows(a))
-      qr_loop(a, q0, 0, max_iterations, tolerance, trailing_rayleigh_shift)
-    }
-  }
+  checked_square_iteration(a, max_iterations, tolerance, fn(a) {
+    let assert Ok(q0) = matrix.identity(matrix.rows(a))
+    qr_loop(a, q0, 0, max_iterations, tolerance, trailing_rayleigh_shift)
+  })
 }
 
 pub fn qr_convergence_history(
@@ -152,13 +168,10 @@ pub fn qr_convergence_history(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(QrConvergenceHistory, NlaError) {
-  case matrix.is_square(a) {
-    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
-    True -> {
-      let assert Ok(q0) = matrix.identity(matrix.rows(a))
-      qr_history_loop(a, q0, 0, max_iterations, tolerance, fn(_t) { 0.0 }, [])
-    }
-  }
+  checked_square_iteration(a, max_iterations, tolerance, fn(a) {
+    let assert Ok(q0) = matrix.identity(matrix.rows(a))
+    qr_history_loop(a, q0, 0, max_iterations, tolerance, fn(_t) { 0.0 }, [])
+  })
 }
 
 pub fn shifted_qr_convergence_history(
@@ -166,21 +179,18 @@ pub fn shifted_qr_convergence_history(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(QrConvergenceHistory, NlaError) {
-  case matrix.is_square(a) {
-    False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
-    True -> {
-      let assert Ok(q0) = matrix.identity(matrix.rows(a))
-      qr_history_loop(
-        a,
-        q0,
-        0,
-        max_iterations,
-        tolerance,
-        trailing_rayleigh_shift,
-        [],
-      )
-    }
-  }
+  checked_square_iteration(a, max_iterations, tolerance, fn(a) {
+    let assert Ok(q0) = matrix.identity(matrix.rows(a))
+    qr_history_loop(
+      a,
+      q0,
+      0,
+      max_iterations,
+      tolerance,
+      trailing_rayleigh_shift,
+      [],
+    )
+  })
 }
 
 pub fn symmetric_qr_convergence_history(
@@ -188,13 +198,10 @@ pub fn symmetric_qr_convergence_history(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(QrConvergenceHistory, NlaError) {
-  case validate_symmetric(a, 1.0e-10) {
-    Error(e) -> Error(e)
-    Ok(_) -> {
-      let assert Ok(q0) = matrix.identity(matrix.rows(a))
-      qr_history_loop(a, q0, 0, max_iterations, tolerance, wilkinson_shift, [])
-    }
-  }
+  checked_symmetric_iteration(a, max_iterations, tolerance, fn(a) {
+    let assert Ok(q0) = matrix.identity(matrix.rows(a))
+    qr_history_loop(a, q0, 0, max_iterations, tolerance, wilkinson_shift, [])
+  })
 }
 
 pub fn implicit_qr_iteration(
@@ -202,18 +209,20 @@ pub fn implicit_qr_iteration(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(SchurResult, NlaError) {
-  case hessenberg_reduction(a) {
-    Error(e) -> Error(e)
-    Ok(reduced) ->
-      implicit_qr_loop(
-        reduced.h,
-        reduced.q,
-        0,
-        max_iterations,
-        tolerance,
-        wilkinson_shift,
-      )
-  }
+  checked_iteration(max_iterations, tolerance, fn() {
+    case hessenberg_reduction(a) {
+      Error(e) -> Error(e)
+      Ok(reduced) ->
+        implicit_qr_loop(
+          reduced.h,
+          reduced.q,
+          0,
+          max_iterations,
+          tolerance,
+          wilkinson_shift,
+        )
+    }
+  })
 }
 
 pub fn double_shift_qr_iteration(
@@ -221,11 +230,13 @@ pub fn double_shift_qr_iteration(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(SchurResult, NlaError) {
-  case hessenberg_reduction(a) {
-    Error(e) -> Error(e)
-    Ok(reduced) ->
-      double_shift_loop(reduced.h, reduced.q, 0, max_iterations, tolerance)
-  }
+  checked_iteration(max_iterations, tolerance, fn() {
+    case hessenberg_reduction(a) {
+      Error(e) -> Error(e)
+      Ok(reduced) ->
+        double_shift_loop(reduced.h, reduced.q, 0, max_iterations, tolerance)
+    }
+  })
 }
 
 pub fn symmetric_qr(
@@ -233,13 +244,10 @@ pub fn symmetric_qr(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(SchurResult, NlaError) {
-  case validate_symmetric(a, 1.0e-10) {
-    Error(e) -> Error(e)
-    Ok(_) -> {
-      let assert Ok(q0) = matrix.identity(matrix.rows(a))
-      qr_loop(a, q0, 0, max_iterations, tolerance, wilkinson_shift)
-    }
-  }
+  checked_symmetric_iteration(a, max_iterations, tolerance, fn(a) {
+    let assert Ok(q0) = matrix.identity(matrix.rows(a))
+    qr_loop(a, q0, 0, max_iterations, tolerance, wilkinson_shift)
+  })
 }
 
 pub fn symmetric_qr_eigen(
@@ -247,33 +255,31 @@ pub fn symmetric_qr_eigen(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(SymmetricEigenResult, NlaError) {
-  case validate_symmetric(a, 1.0e-10) {
-    Error(e) -> Error(e)
-    Ok(_) ->
-      case symmetric_tridiagonal_reduction(a) {
-        Error(e) -> Error(e)
-        Ok(reduced) ->
-          case
-            qr_loop(
-              reduced.t,
-              reduced.q,
-              0,
-              max_iterations,
-              tolerance,
-              wilkinson_shift,
-            )
-          {
-            Error(e) -> Error(e)
-            Ok(schur) ->
-              Ok(SymmetricEigenResult(
-                eigenvectors: schur.q,
-                diagonal: diagonal_vector(schur.t),
-                iterations: schur.iterations,
-                converged: schur.converged,
-              ))
-          }
-      }
-  }
+  checked_symmetric_iteration(a, max_iterations, tolerance, fn(a) {
+    case symmetric_tridiagonal_reduction(a) {
+      Error(e) -> Error(e)
+      Ok(reduced) ->
+        case
+          qr_loop(
+            reduced.t,
+            reduced.q,
+            0,
+            max_iterations,
+            tolerance,
+            wilkinson_shift,
+          )
+        {
+          Error(e) -> Error(e)
+          Ok(schur) ->
+            Ok(SymmetricEigenResult(
+              eigenvectors: schur.q,
+              diagonal: diagonal_vector(schur.t),
+              iterations: schur.iterations,
+              converged: schur.converged,
+            ))
+        }
+    }
+  })
 }
 
 pub fn wilkinson_shift(a: Matrix) -> Float {
@@ -284,15 +290,15 @@ pub fn wilkinson_shift(a: Matrix) -> Float {
       let a00 = matrix.unsafe_get(a, n - 2, n - 2)
       let a01 = matrix.unsafe_get(a, n - 2, n - 1)
       let a11 = matrix.unsafe_get(a, n - 1, n - 1)
-      let delta = { a00 -. a11 } /. 2.0
+      let delta = a00 /. 2.0 -. a11 /. 2.0
       let scale = float.absolute_value(delta)
-      case float.square_root(delta *. delta +. a01 *. a01) {
+      case numerics.hypot(delta, a01) {
         Error(_) -> a11
         Ok(denominator_root) -> {
           let denominator = scale +. denominator_root
-          case denominator <=. small {
+          case denominator <=. 0.0 {
             True -> a11
-            False -> a11 -. sign(delta) *. a01 *. a01 /. denominator
+            False -> a11 -. sign(delta) *. a01 *. { a01 /. denominator }
           }
         }
       }
@@ -303,10 +309,14 @@ pub fn wilkinson_shift(a: Matrix) -> Float {
 pub fn hessenberg_reduction(a: Matrix) -> Result(HessenbergResult, NlaError) {
   case matrix.is_square(a) {
     False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
-    True -> {
-      let assert Ok(q0) = matrix.identity(matrix.rows(a))
-      hessenberg_loop(a, q0, 0)
-    }
+    True ->
+      case matrix.is_finite(a) {
+        False -> Error(NonFiniteInput("Hessenberg matrix"))
+        True -> {
+          let assert Ok(q0) = matrix.identity(matrix.rows(a))
+          hessenberg_loop(a, q0, 0)
+        }
+      }
   }
 }
 
@@ -333,13 +343,10 @@ pub fn jacobi_eigen(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(SymmetricEigenResult, NlaError) {
-  case validate_symmetric(a, 1.0e-10) {
-    Error(e) -> Error(e)
-    Ok(_) -> {
-      let assert Ok(v0) = matrix.identity(matrix.rows(a))
-      jacobi_loop(a, v0, 0, max_iterations, tolerance)
-    }
-  }
+  checked_symmetric_iteration(a, max_iterations, tolerance, fn(a) {
+    let assert Ok(v0) = matrix.identity(matrix.rows(a))
+    jacobi_loop(a, v0, 0, max_iterations, tolerance)
+  })
 }
 
 pub fn real_schur_basic(
@@ -347,23 +354,33 @@ pub fn real_schur_basic(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(SchurResult, NlaError) {
-  case hessenberg_reduction(a) {
-    Error(e) -> Error(e)
-    Ok(reduced) ->
-      real_schur_loop(reduced.h, reduced.q, 0, max_iterations, tolerance)
-  }
+  checked_iteration(max_iterations, tolerance, fn() {
+    case hessenberg_reduction(a) {
+      Error(e) -> Error(e)
+      Ok(reduced) ->
+        real_schur_loop(reduced.h, reduced.q, 0, max_iterations, tolerance)
+    }
+  })
 }
 
 pub fn real_schur_blocks(
   t: Matrix,
   tolerance: Float,
 ) -> Result(List(SchurBlock), NlaError) {
-  case matrix.is_square(t) {
-    False -> Error(NotSquare(matrix.rows(t), matrix.cols(t)))
-    True ->
-      case quasi_lower_off_diagonal_norm(t, tolerance) <=. tolerance {
-        True -> Ok(scan_schur_blocks(t, 0, tolerance, []))
-        False -> Error(InvalidInput("matrix is not in real Schur form"))
+  case validate_nonnegative_tolerance(tolerance) {
+    Error(e) -> Error(e)
+    Ok(_) ->
+      case matrix.is_square(t) {
+        False -> Error(NotSquare(matrix.rows(t), matrix.cols(t)))
+        True ->
+          case matrix.is_finite(t) {
+            False -> Error(NonFiniteInput("real Schur form"))
+            True ->
+              case quasi_lower_off_diagonal_norm(t, tolerance) <=. tolerance {
+                True -> Ok(scan_schur_blocks(t, 0, tolerance, []))
+                False -> Error(InvalidInput("matrix is not in real Schur form"))
+              }
+          }
       }
   }
 }
@@ -475,12 +492,17 @@ pub fn real_schur_complex_eigenpairs(
   t: Matrix,
   tolerance: Float,
 ) -> Result(List(ComplexEigenpair), NlaError) {
-  case validate_schur_eigenpair_inputs(q, t) {
+  case validate_nonnegative_tolerance(tolerance) {
     Error(e) -> Error(e)
     Ok(_) ->
-      case real_schur_blocks(t, tolerance) {
+      case validate_schur_eigenpair_inputs(q, t) {
         Error(e) -> Error(e)
-        Ok(blocks) -> schur_blocks_complex_eigenpairs(q, t, blocks, blocks, 0)
+        Ok(_) ->
+          case real_schur_blocks(t, tolerance) {
+            Error(e) -> Error(e)
+            Ok(blocks) ->
+              schur_blocks_complex_eigenpairs(q, t, blocks, blocks, 0)
+          }
       }
   }
 }
@@ -550,9 +572,8 @@ fn jacobi_loop(
           let apq = matrix.unsafe_get(a, p, q)
           let app = matrix.unsafe_get(a, p, p)
           let aqq = matrix.unsafe_get(a, q, q)
-          let tau = { aqq -. app } /. { 2.0 *. apq }
-          let t = jacobi_t(tau)
-          let c = reciprocal_square_root(1.0 +. t *. t)
+          let t = jacobi_t(app, aqq, apq)
+          let c = reciprocal_hypot(1.0, t)
           let s = t *. c
           let next_a = apply_jacobi_similarity(a, p, q, c, s, t)
           let next_v = apply_jacobi_to_eigenvectors(eigenvectors, p, q, c, s)
@@ -1050,39 +1071,46 @@ fn double_shift_step(t: Matrix) -> Result(#(Matrix, Matrix), NlaError) {
       let b = matrix.unsafe_get(t, n - 2, n - 1)
       let c = matrix.unsafe_get(t, n - 1, n - 2)
       let d = matrix.unsafe_get(t, n - 1, n - 1)
-      let s = a +. d
-      let p = a *. d -. b *. c
-      case matrix.mul(t, t) {
-        Error(e) -> Error(e)
-        Ok(t2) ->
-          case matrix.sub(t2, matrix.scale(t, s)) {
+      let scale = matrix.norm_inf(t)
+      case scale <=. 0.0 {
+        True -> single_shift_givens_step(t, trailing_rayleigh_shift(t))
+        False -> {
+          let s = a /. scale +. d /. scale
+          let p = scaled_two_by_two_determinant(a, b, c, d, scale)
+          let scaled_t = divide_matrix(t, scale)
+          case matrix.mul(scaled_t, scaled_t) {
             Error(e) -> Error(e)
-            Ok(partial) ->
-              case matrix.add(partial, diagonal_shift(n, p)) {
+            Ok(t2) ->
+              case matrix.sub(t2, matrix.scale(scaled_t, s)) {
                 Error(e) -> Error(e)
-                Ok(poly) ->
-                  case matrix.frobenius_norm(poly) {
+                Ok(partial) ->
+                  case matrix.add(partial, diagonal_shift(n, p)) {
                     Error(e) -> Error(e)
-                    Ok(norm) if norm <=. small ->
-                      single_shift_givens_step(t, wilkinson_shift(t))
-                    Ok(_) ->
-                      case orthogonal.householder_qr(poly) {
+                    Ok(poly) ->
+                      case matrix.frobenius_norm(poly) {
                         Error(e) -> Error(e)
-                        Ok(qr) -> {
-                          let qt = matrix.transpose(qr.q)
-                          case matrix.mul(qt, t) {
+                        Ok(norm) if norm <=. small ->
+                          single_shift_givens_step(t, wilkinson_shift(t))
+                        Ok(_) ->
+                          case orthogonal.householder_qr(poly) {
                             Error(e) -> Error(e)
-                            Ok(qtt) ->
-                              case matrix.mul(qtt, qr.q) {
+                            Ok(qr) -> {
+                              let qt = matrix.transpose(qr.q)
+                              case matrix.mul(qt, t) {
                                 Error(e) -> Error(e)
-                                Ok(next_t) -> Ok(#(next_t, qr.q))
+                                Ok(qtt) ->
+                                  case matrix.mul(qtt, qr.q) {
+                                    Error(e) -> Error(e)
+                                    Ok(next_t) -> Ok(#(next_t, qr.q))
+                                  }
                               }
+                            }
                           }
-                        }
                       }
                   }
               }
           }
+        }
       }
     }
   }
@@ -1108,14 +1136,74 @@ fn eigen_residual(a: Matrix, x: Vector) -> Result(#(Float, Float), NlaError) {
 }
 
 fn rayleigh_quotient(x: Vector, ax: Vector) -> Result(Float, NlaError) {
-  case vector.dot(x, x) {
+  case vector.norm2(x) {
     Error(e) -> Error(e)
-    Ok(denominator) if denominator <=. small -> Error(ZeroNorm)
-    Ok(denominator) ->
-      case vector.dot(x, ax) {
+    Ok(scale) if scale <=. 0.0 -> Error(ZeroNorm)
+    Ok(scale) ->
+      case vector.divide(x, scale) {
         Error(e) -> Error(e)
-        Ok(numerator) -> Ok(numerator /. denominator)
+        Ok(normalized_x) ->
+          case vector.divide(ax, scale) {
+            Error(e) -> Error(e)
+            Ok(normalized_ax) -> vector.dot(normalized_x, normalized_ax)
+          }
       }
+  }
+}
+
+fn checked_iteration(
+  max_iterations: Int,
+  tolerance: Float,
+  run: fn() -> Result(output, NlaError),
+) -> Result(output, NlaError) {
+  case max_iterations < 0 {
+    True -> Error(InvalidInput("max_iterations must be non-negative"))
+    False ->
+      case validate_nonnegative_tolerance(tolerance) {
+        Error(e) -> Error(e)
+        Ok(_) -> run()
+      }
+  }
+}
+
+fn checked_square_iteration(
+  a: Matrix,
+  max_iterations: Int,
+  tolerance: Float,
+  run: fn(Matrix) -> Result(output, NlaError),
+) -> Result(output, NlaError) {
+  checked_iteration(max_iterations, tolerance, fn() {
+    case matrix.is_square(a) {
+      False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
+      True ->
+        case matrix.is_finite(a) {
+          False -> Error(NonFiniteInput("eigenvalue iteration matrix"))
+          True -> run(a)
+        }
+    }
+  })
+}
+
+fn checked_symmetric_iteration(
+  a: Matrix,
+  max_iterations: Int,
+  tolerance: Float,
+  run: fn(Matrix) -> Result(output, NlaError),
+) -> Result(output, NlaError) {
+  checked_iteration(max_iterations, tolerance, fn() {
+    case validate_symmetric(a, 1.0e-10) {
+      Error(e) -> Error(e)
+      Ok(_) -> run(a)
+    }
+  })
+}
+
+fn validate_nonnegative_tolerance(tolerance: Float) -> Result(Nil, NlaError) {
+  case numerics.is_finite(tolerance) {
+    False -> Error(NonFiniteInput("eigenvalue tolerance"))
+    True if tolerance <. 0.0 ->
+      Error(InvalidInput("tolerance must be non-negative"))
+    True -> Ok(Nil)
   }
 }
 
@@ -1123,20 +1211,27 @@ fn validate_symmetric(a: Matrix, tolerance: Float) -> Result(Nil, NlaError) {
   case matrix.is_square(a) {
     False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
     True ->
-      case is_symmetric(a, tolerance) {
-        True -> Ok(Nil)
-        False -> Error(InvalidInput("matrix must be symmetric"))
+      case matrix.is_finite(a) {
+        False -> Error(NonFiniteInput("symmetric eigenvalue matrix"))
+        True ->
+          case is_symmetric(a, tolerance) {
+            True -> Ok(Nil)
+            False -> Error(InvalidInput("matrix must be symmetric"))
+          }
       }
   }
 }
 
 fn is_symmetric(a: Matrix, tolerance: Float) -> Bool {
+  let scale = matrix.norm_inf(a)
   list.all(matrix.indices(matrix.rows(a)), satisfying: fn(i) {
     list.all(matrix.indices(matrix.cols(a)), satisfying: fn(j) {
-      float.absolute_value(
-        matrix.unsafe_get(a, i, j) -. matrix.unsafe_get(a, j, i),
+      numerics.relative_close_at_scale(
+        matrix.unsafe_get(a, i, j),
+        matrix.unsafe_get(a, j, i),
+        scale,
+        tolerance,
       )
-      <=. tolerance
     })
   })
 }
@@ -1166,26 +1261,26 @@ fn diagonal_vector(a: Matrix) -> Vector {
   )
 }
 
-fn jacobi_t(tau: Float) -> Float {
-  let denominator =
-    float.absolute_value(tau) +. square_root_or_one(1.0 +. tau *. tau)
-  case denominator <=. small {
-    True -> 1.0
-    False -> sign(tau) /. denominator
-  }
-}
-
-fn reciprocal_square_root(value: Float) -> Float {
-  case float.square_root(value) {
-    Ok(root) if root >. small -> 1.0 /. root
-    _ -> 0.0
-  }
-}
-
-fn square_root_or_one(value: Float) -> Float {
-  case float.square_root(value) {
-    Ok(root) -> root
-    Error(_) -> 1.0
+fn jacobi_t(app: Float, aqq: Float, apq: Float) -> Float {
+  let scale = numerics.max_abs([app, aqq, apq])
+  case scale <=. 0.0 {
+    True -> 0.0
+    False -> {
+      let delta = aqq /. scale -. app /. scale
+      let twice_apq = 2.0 *. { apq /. scale }
+      case delta == 0.0 {
+        True -> 1.0
+        False ->
+          case numerics.hypot(delta, twice_apq) {
+            Error(_) -> 0.0
+            Ok(root) if root <=. 0.0 -> 0.0
+            Ok(root) ->
+              sign(delta)
+              *. { twice_apq /. root }
+              /. { float.absolute_value(delta) /. root +. 1.0 }
+          }
+      }
+    }
   }
 }
 
@@ -1197,6 +1292,14 @@ fn shifted(a: Matrix, shift: Float) -> Matrix {
         True -> shift
         False -> 0.0
       }
+    })
+  result
+}
+
+fn divide_matrix(a: Matrix, divisor: Float) -> Matrix {
+  let assert Ok(result) =
+    matrix.from_fn(rows: matrix.rows(a), cols: matrix.cols(a), with: fn(i, j) {
+      matrix.unsafe_get(a, i, j) /. divisor
     })
   result
 }
@@ -1224,11 +1327,11 @@ fn sign(value: Float) -> Float {
 }
 
 fn lower_off_diagonal_norm(a: Matrix) -> Float {
-  list.fold(matrix.indices(matrix.rows(a)), 0.0, fn(acc, i) {
-    list.fold(matrix.indices(matrix.cols(a)), acc, fn(inner, j) {
+  numerics.compensated_sum_map(matrix.indices(matrix.rows(a)), fn(i) {
+    numerics.compensated_sum_map(matrix.indices(matrix.cols(a)), fn(j) {
       case i > j {
-        True -> inner +. float.absolute_value(matrix.unsafe_get(a, i, j))
-        False -> inner
+        True -> float.absolute_value(matrix.unsafe_get(a, i, j))
+        False -> 0.0
       }
     })
   })
@@ -1240,11 +1343,11 @@ fn quasi_lower_off_diagonal_norm(a: Matrix, tolerance: Float) -> Float {
 }
 
 fn lower_beyond_first_subdiagonal_norm(a: Matrix) -> Float {
-  list.fold(matrix.indices(matrix.rows(a)), 0.0, fn(acc, i) {
-    list.fold(matrix.indices(matrix.cols(a)), acc, fn(inner, j) {
+  numerics.compensated_sum_map(matrix.indices(matrix.rows(a)), fn(i) {
+    numerics.compensated_sum_map(matrix.indices(matrix.cols(a)), fn(j) {
       case i > j + 1 {
-        True -> inner +. float.absolute_value(matrix.unsafe_get(a, i, j))
-        False -> inner
+        True -> float.absolute_value(matrix.unsafe_get(a, i, j))
+        False -> 0.0
       }
     })
   })
@@ -1554,9 +1657,10 @@ fn complex_block_seed(
   let a01 = matrix.unsafe_get(t, start, start + 1)
   let a10 = matrix.unsafe_get(t, start + 1, start)
   let a11 = matrix.unsafe_get(t, start + 1, start + 1)
+  let block_scale = schur_block_scale(t, start)
   case float.absolute_value(a01) >=. float.absolute_value(a10) {
     True ->
-      case float.absolute_value(a01) <=. small {
+      case numerics.relative_near_zero(a01, block_scale, small) {
         True -> Error(InvalidInput("complex Schur block is singular"))
         False ->
           Ok(#(
@@ -1565,7 +1669,7 @@ fn complex_block_seed(
           ))
       }
     False ->
-      case float.absolute_value(a10) <=. small {
+      case numerics.relative_near_zero(a10, block_scale, small) {
         True -> Error(InvalidInput("complex Schur block is singular"))
         False ->
           Ok(#(
@@ -1677,10 +1781,17 @@ fn real_complex_dot(
   row: List(Float),
   values: List(complex.Complex),
 ) -> complex.Complex {
-  list.fold(list.zip(row, with: values), complex.zero(), fn(acc, pair) {
-    let #(matrix_value, vector_value) = pair
-    complex.add(acc, complex.scale(vector_value, matrix_value))
-  })
+  let pairs = list.zip(row, with: values)
+  complex.new(
+    real: numerics.compensated_sum_map(pairs, fn(pair) {
+      let #(matrix_value, vector_value) = pair
+      matrix_value *. vector_value.real
+    }),
+    imaginary: numerics.compensated_sum_map(pairs, fn(pair) {
+      let #(matrix_value, vector_value) = pair
+      matrix_value *. vector_value.imaginary
+    }),
+  )
 }
 
 fn matrix_row_values(a: Matrix, row: Int) -> List(Float) {
@@ -1695,7 +1806,11 @@ fn validate_square_pair(a: Matrix, b: Matrix) -> Result(Nil, NlaError) {
     _, False -> Error(NotSquare(matrix.rows(b), matrix.cols(b)))
     True, True ->
       case matrix.rows(a) == matrix.rows(b) {
-        True -> Ok(Nil)
+        True ->
+          case matrix.is_finite(a) && matrix.is_finite(b) {
+            True -> Ok(Nil)
+            False -> Error(NonFiniteInput("generalized eigenvalue matrices"))
+          }
         False ->
           Error(DimensionMismatch(
             expected: "matching square dimension "
@@ -1710,9 +1825,11 @@ fn safe_complex_div(
   numerator: complex.Complex,
   denominator: complex.Complex,
 ) -> Result(complex.Complex, NlaError) {
-  case complex.abs_squared(denominator) <=. small *. small {
-    True -> Error(InvalidInput("ill-conditioned complex Schur solve"))
-    False -> complex.div(numerator, denominator)
+  case complex.abs(denominator) {
+    Error(e) -> Error(e)
+    Ok(magnitude) if magnitude <=. 0.0 ->
+      Error(InvalidInput("ill-conditioned complex Schur solve"))
+    Ok(_) -> complex.div(numerator, denominator)
   }
 }
 
@@ -1782,7 +1899,11 @@ fn validate_schur_eigenpair_inputs(
       case
         matrix.rows(q) == matrix.rows(t) && matrix.cols(q) == matrix.cols(t)
       {
-        True -> Ok(Nil)
+        True ->
+          case matrix.is_finite(q) && matrix.is_finite(t) {
+            True -> Ok(Nil)
+            False -> Error(NonFiniteInput("real Schur eigenpair matrices"))
+          }
         False ->
           Error(DimensionMismatch(
             expected: int.to_string(matrix.rows(t))
@@ -1807,15 +1928,15 @@ fn scan_schur_blocks(
     False ->
       case is_complex_schur_pair(t, index, tolerance) {
         True -> {
-          let #(trace, determinant, discriminant) = schur_block_values(t, index)
-          let imaginary = square_root_or_zero(0.0 -. discriminant) /. 2.0
+          let stats = schur_block_stats(t, index)
+          let imaginary = schur_block_imaginary(stats)
           let block =
             ComplexConjugateBlock(
               start: index,
-              real: trace /. 2.0,
+              real: stats.trace /. 2.0,
               imaginary: imaginary,
-              trace: trace,
-              determinant: determinant,
+              trace: stats.trace,
+              determinant: stats.determinant,
             )
           scan_schur_blocks(t, index + 2, tolerance, [block, ..blocks])
         }
@@ -1850,26 +1971,138 @@ fn is_complex_schur_pair(a: Matrix, start: Int, tolerance: Float) -> Bool {
     True -> {
       let subdiagonal =
         float.absolute_value(matrix.unsafe_get(a, start + 1, start))
-      let #(_, _, discriminant) = schur_block_values(a, start)
-      subdiagonal >. tolerance && discriminant <. 0.0
+      let stats = schur_block_stats(a, start)
+      subdiagonal >. tolerance && stats.scaled_discriminant_quarter <. 0.0
     }
   }
 }
 
-fn schur_block_values(a: Matrix, start: Int) -> #(Float, Float, Float) {
+fn schur_block_stats(a: Matrix, start: Int) -> SchurBlockStats {
   let a00 = matrix.unsafe_get(a, start, start)
   let a01 = matrix.unsafe_get(a, start, start + 1)
   let a10 = matrix.unsafe_get(a, start + 1, start)
   let a11 = matrix.unsafe_get(a, start + 1, start + 1)
-  let trace = a00 +. a11
-  let determinant = a00 *. a11 -. a01 *. a10
-  #(trace, determinant, trace *. trace -. 4.0 *. determinant)
+  let half_trace = a00 /. 2.0 +. a11 /. 2.0
+  let delta = a00 /. 2.0 -. a11 /. 2.0
+  let discriminant_scale = numerics.max_abs([delta, a01, a10])
+  let scaled_discriminant_quarter = case discriminant_scale <=. 0.0 {
+    True -> 0.0
+    False -> {
+      let scaled_delta = delta /. discriminant_scale
+      scaled_delta
+      *. scaled_delta
+      +. { a01 /. discriminant_scale }
+      *. { a10 /. discriminant_scale }
+    }
+  }
+  SchurBlockStats(
+    trace: rescale_linear(2.0, half_trace),
+    determinant: two_by_two_determinant(a00, a01, a10, a11),
+    scaled_discriminant_quarter: scaled_discriminant_quarter,
+    discriminant_scale: discriminant_scale,
+  )
+}
+
+fn schur_block_imaginary(stats: SchurBlockStats) -> Float {
+  case stats.scaled_discriminant_quarter <. 0.0 {
+    False -> 0.0
+    True ->
+      rescale_linear(
+        stats.discriminant_scale,
+        square_root_or_zero(0.0 -. stats.scaled_discriminant_quarter),
+      )
+  }
+}
+
+fn schur_block_scale(a: Matrix, start: Int) -> Float {
+  numerics.max_abs([
+    matrix.unsafe_get(a, start, start),
+    matrix.unsafe_get(a, start, start + 1),
+    matrix.unsafe_get(a, start + 1, start),
+    matrix.unsafe_get(a, start + 1, start + 1),
+  ])
+}
+
+fn two_by_two_determinant(
+  a00: Float,
+  a01: Float,
+  a10: Float,
+  a11: Float,
+) -> Float {
+  let scale = numerics.max_abs([a00, a01, a10, a11])
+  rescale_square(
+    scale,
+    scaled_two_by_two_determinant(a00, a01, a10, a11, scale),
+  )
+}
+
+fn scaled_two_by_two_determinant(
+  a00: Float,
+  a01: Float,
+  a10: Float,
+  a11: Float,
+  scale: Float,
+) -> Float {
+  case scale <=. 0.0 {
+    True -> 0.0
+    False -> {
+      { a00 /. scale }
+      *. { a11 /. scale }
+      -. { a01 /. scale }
+      *. { a10 /. scale }
+    }
+  }
+}
+
+fn rescale_square(scale: Float, value: Float) -> Float {
+  let magnitude = float.absolute_value(value)
+  case scale <=. 0.0 || magnitude <=. 0.0 {
+    True -> 0.0
+    False ->
+      case scale <. 1.0 {
+        True -> scale *. scale *. value
+        False ->
+          case scale >. sqrt_large_float {
+            True -> sign(value) *. large_float
+            False -> {
+              let square = scale *. scale
+              case magnitude >. large_float /. square {
+                True -> sign(value) *. large_float
+                False -> square *. value
+              }
+            }
+          }
+      }
+  }
+}
+
+fn rescale_linear(scale: Float, value: Float) -> Float {
+  let magnitude = float.absolute_value(value)
+  case scale <=. 0.0 || magnitude <=. 0.0 {
+    True -> 0.0
+    False ->
+      case scale <. 1.0 {
+        True -> scale *. value
+        False ->
+          case magnitude >. large_float /. scale {
+            True -> sign(value) *. large_float
+            False -> scale *. value
+          }
+      }
+  }
 }
 
 fn square_root_or_zero(value: Float) -> Float {
   case float.square_root(value) {
     Ok(root) -> root
     Error(_) -> 0.0
+  }
+}
+
+fn reciprocal_hypot(a: Float, b: Float) -> Float {
+  case numerics.hypot(a, b) {
+    Ok(value) if value >. small -> 1.0 /. value
+    _ -> 0.0
   }
 }
 
@@ -1893,7 +2126,11 @@ fn validate_square_vector(a: Matrix, x: Vector) -> Result(Nil, NlaError) {
     False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
     True ->
       case matrix.rows(a) == vector.dimension(x) {
-        True -> Ok(Nil)
+        True ->
+          case matrix.is_finite(a) && vector.is_finite(x) {
+            True -> Ok(Nil)
+            False -> Error(NonFiniteInput("eigenvalue iteration inputs"))
+          }
         False ->
           Error(DimensionMismatch(
             expected: "matrix dimension " <> int_to_string(matrix.rows(a)),

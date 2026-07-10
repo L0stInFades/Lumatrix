@@ -2,12 +2,16 @@ import gleam/float
 import gleam/int
 import gleam/list
 import lumatrix/error.{
-  type NlaError, DimensionMismatch, InvalidInput, NotSquare, SingularMatrix,
+  type NlaError, ArithmeticOverflow, DimensionMismatch, InvalidInput,
+  NonFiniteInput, NotSquare, SingularMatrix,
 }
 import lumatrix/matrix.{type Matrix}
+import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
-const pivot_tolerance = 1.0e-12
+const pivot_tolerance = 1.0e-14
+
+const symmetry_tolerance = 1.0e-12
 
 pub type LU {
   LU(l: Matrix, u: Matrix, p: Matrix, swaps: Int)
@@ -34,54 +38,68 @@ pub fn gauss_transform(
     && i < matrix.rows(a)
   {
     False -> Error(InvalidInput("invalid Gauss transform indices"))
-    True -> {
-      let pivot = matrix.unsafe_get(a, k, k)
-      case float.absolute_value(pivot) <=. pivot_tolerance {
-        True -> Error(SingularMatrix(k))
-        False -> {
-          let factor = 0.0 -. matrix.unsafe_get(a, i, k) /. pivot
-          matrix.from_fn(
-            rows: matrix.rows(a),
-            cols: matrix.cols(a),
-            with: fn(row, col) {
-              case row == col {
-                True -> 1.0
-                False ->
-                  case row == i && col == k {
-                    True -> factor
-                    False -> 0.0
+    True ->
+      case matrix.is_finite(a) {
+        False -> Error(NonFiniteInput("Gauss transform matrix"))
+        True -> {
+          let pivot = matrix.unsafe_get(a, k, k)
+          case
+            singular_magnitude(float.absolute_value(pivot), matrix.norm_inf(a))
+          {
+            True -> Error(SingularMatrix(k))
+            False -> {
+              let factor = 0.0 -. matrix.unsafe_get(a, i, k) /. pivot
+              matrix.from_fn(
+                rows: matrix.rows(a),
+                cols: matrix.cols(a),
+                with: fn(row, col) {
+                  case row == col {
+                    True -> 1.0
+                    False ->
+                      case row == i && col == k {
+                        True -> factor
+                        False -> 0.0
+                      }
                   }
-              }
-            },
-          )
+                },
+              )
+            }
+          }
         }
       }
-    }
   }
 }
 
 pub fn lu_factor(matrix a: Matrix) -> Result(LU, NlaError) {
   case matrix.is_square(a) {
     False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
-    True -> {
-      let n = matrix.rows(a)
-      let assert Ok(l) = matrix.identity(n)
-      let assert Ok(p) = matrix.identity(n)
-      lu_loop(0, n, a, l, p, 0)
-    }
+    True ->
+      case matrix.is_finite(a) {
+        False -> Error(NonFiniteInput("LU matrix"))
+        True -> {
+          let n = matrix.rows(a)
+          let assert Ok(l) = matrix.identity(n)
+          let assert Ok(p) = matrix.identity(n)
+          lu_loop(0, n, a, l, p, 0, matrix.norm_inf(a))
+        }
+      }
   }
 }
 
 pub fn complete_lu_factor(matrix a: Matrix) -> Result(CompleteLU, NlaError) {
   case matrix.is_square(a) {
     False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
-    True -> {
-      let n = matrix.rows(a)
-      let assert Ok(l) = matrix.identity(n)
-      let assert Ok(p) = matrix.identity(n)
-      let assert Ok(q) = matrix.identity(n)
-      complete_lu_loop(0, n, a, l, p, q, 0)
-    }
+    True ->
+      case matrix.is_finite(a) {
+        False -> Error(NonFiniteInput("complete-pivoting LU matrix"))
+        True -> {
+          let n = matrix.rows(a)
+          let assert Ok(l) = matrix.identity(n)
+          let assert Ok(p) = matrix.identity(n)
+          let assert Ok(q) = matrix.identity(n)
+          complete_lu_loop(0, n, a, l, p, q, 0, matrix.norm_inf(a))
+        }
+      }
   }
 }
 
@@ -89,13 +107,17 @@ pub fn cholesky_factor(matrix a: Matrix) -> Result(Cholesky, NlaError) {
   case matrix.is_square(a) {
     False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
     True ->
-      case is_symmetric(a, pivot_tolerance) {
-        False -> Error(InvalidInput("matrix must be symmetric"))
-        True -> {
-          let assert Ok(l) =
-            matrix.zeros(rows: matrix.rows(a), cols: matrix.cols(a))
-          cholesky_loop(a, l, 0, 0)
-        }
+      case matrix.is_finite(a) {
+        False -> Error(NonFiniteInput("Cholesky matrix"))
+        True ->
+          case is_symmetric(a, symmetry_tolerance) {
+            False -> Error(InvalidInput("matrix must be symmetric"))
+            True -> {
+              let assert Ok(l) =
+                matrix.zeros(rows: matrix.rows(a), cols: matrix.cols(a))
+              cholesky_loop(a, l, 0, 0, matrix.norm_inf(a))
+            }
+          }
       }
   }
 }
@@ -203,7 +225,11 @@ pub fn forward_substitution(l: Matrix, b: Vector) -> Result(Vector, NlaError) {
           <> int.to_string(matrix.cols(l)),
         actual: int.to_string(vector.dimension(b)),
       ))
-    True -> forward_loop(l, b, 0, [])
+    True ->
+      case matrix.is_finite(l) && vector.is_finite(b) {
+        False -> Error(NonFiniteInput("forward substitution system"))
+        True -> forward_loop(l, b, 0, [], matrix.norm_inf(l))
+      }
   }
 }
 
@@ -218,39 +244,41 @@ pub fn back_substitution(u: Matrix, b: Vector) -> Result(Vector, NlaError) {
           <> int.to_string(matrix.cols(u)),
         actual: int.to_string(vector.dimension(b)),
       ))
-    True -> back_loop(u, b, matrix.rows(u) - 1, [])
+    True ->
+      case matrix.is_finite(u) && vector.is_finite(b) {
+        False -> Error(NonFiniteInput("back substitution system"))
+        True -> back_loop(u, b, matrix.rows(u) - 1, [], matrix.norm_inf(u))
+      }
   }
 }
 
 pub fn determinant(a: Matrix) -> Result(Float, NlaError) {
   case lu_factor(a) {
     Error(e) -> Error(e)
-    Ok(factors) -> {
-      let product =
-        list.fold(matrix.indices(matrix.rows(factors.u)), 1.0, fn(acc, i) {
-          acc *. matrix.unsafe_get(factors.u, i, i)
-        })
-      case factors.swaps % 2 == 0 {
-        True -> Ok(product)
-        False -> Ok(0.0 -. product)
+    Ok(factors) ->
+      case checked_diagonal_product(factors.u) {
+        Error(e) -> Error(e)
+        Ok(product) ->
+          case factors.swaps % 2 == 0 {
+            True -> Ok(product)
+            False -> Ok(0.0 -. product)
+          }
       }
-    }
   }
 }
 
 pub fn determinant_complete_pivoting(a: Matrix) -> Result(Float, NlaError) {
   case complete_lu_factor(a) {
     Error(e) -> Error(e)
-    Ok(factors) -> {
-      let product =
-        list.fold(matrix.indices(matrix.rows(factors.u)), 1.0, fn(acc, i) {
-          acc *. matrix.unsafe_get(factors.u, i, i)
-        })
-      case factors.swaps % 2 == 0 {
-        True -> Ok(product)
-        False -> Ok(0.0 -. product)
+    Ok(factors) ->
+      case checked_diagonal_product(factors.u) {
+        Error(e) -> Error(e)
+        Ok(product) ->
+          case factors.swaps % 2 == 0 {
+            True -> Ok(product)
+            False -> Ok(0.0 -. product)
+          }
       }
-    }
   }
 }
 
@@ -282,13 +310,14 @@ fn cholesky_loop(
   l: Matrix,
   i: Int,
   j: Int,
+  scale: Float,
 ) -> Result(Cholesky, NlaError) {
   case i >= matrix.rows(a) {
     True -> Ok(Cholesky(l: l))
     False ->
       case j > i {
-        True -> cholesky_loop(a, l, i + 1, 0)
-        False -> cholesky_entry(a, l, i, j)
+        True -> cholesky_loop(a, l, i + 1, 0, scale)
+        False -> cholesky_entry(a, l, i, j, scale)
       }
   }
 }
@@ -298,48 +327,63 @@ fn cholesky_entry(
   l: Matrix,
   i: Int,
   j: Int,
+  scale: Float,
 ) -> Result(Cholesky, NlaError) {
-  let sum = cholesky_dot(l, i, j, 0, 0.0)
-  case i == j {
-    True -> {
-      let value = matrix.unsafe_get(a, i, i) -. sum
-      case value <=. pivot_tolerance {
-        True -> Error(SingularMatrix(i))
-        False ->
-          case float.square_root(value) {
-            Error(_) -> Error(SingularMatrix(i))
-            Ok(root) -> {
-              let assert Ok(next_l) = matrix.set(l, i, j, root)
-              cholesky_loop(a, next_l, i, j + 1)
-            }
+  case cholesky_dot(l, i, j) {
+    Error(e) -> Error(e)
+    Ok(sum) ->
+      case i == j {
+        True ->
+          case numerics.checked_subtract(matrix.unsafe_get(a, i, i), sum) {
+            Error(_) -> Error(ArithmeticOverflow("Cholesky diagonal update"))
+            Ok(value) ->
+              case value <=. 0.0 || singular_magnitude(value, scale) {
+                True -> Error(SingularMatrix(i))
+                False ->
+                  case float.square_root(value) {
+                    Error(_) -> Error(SingularMatrix(i))
+                    Ok(root) ->
+                      case matrix.set(l, i, j, root) {
+                        Error(e) -> Error(e)
+                        Ok(next_l) -> cholesky_loop(a, next_l, i, j + 1, scale)
+                      }
+                  }
+              }
           }
-      }
-    }
-    False -> {
-      let diagonal = matrix.unsafe_get(l, j, j)
-      case float.absolute_value(diagonal) <=. pivot_tolerance {
-        True -> Error(SingularMatrix(j))
         False -> {
-          let value = { matrix.unsafe_get(a, i, j) -. sum } /. diagonal
-          let assert Ok(next_l) = matrix.set(l, i, j, value)
-          cholesky_loop(a, next_l, i, j + 1)
+          let diagonal = matrix.unsafe_get(l, j, j)
+          case singular_magnitude(diagonal *. diagonal, scale) {
+            True -> Error(SingularMatrix(j))
+            False ->
+              case numerics.checked_subtract(matrix.unsafe_get(a, i, j), sum) {
+                Error(_) ->
+                  Error(ArithmeticOverflow("Cholesky off-diagonal update"))
+                Ok(numerator) ->
+                  case numerics.checked_divide(numerator, diagonal) {
+                    Error(_) -> Error(ArithmeticOverflow("Cholesky division"))
+                    Ok(value) ->
+                      case matrix.set(l, i, j, value) {
+                        Error(e) -> Error(e)
+                        Ok(next_l) -> cholesky_loop(a, next_l, i, j + 1, scale)
+                      }
+                  }
+              }
+          }
         }
       }
-    }
   }
 }
 
-fn cholesky_dot(l: Matrix, i: Int, j: Int, k: Int, sum: Float) -> Float {
-  case k >= j {
-    True -> sum
-    False ->
-      cholesky_dot(
-        l,
-        i,
-        j,
-        k + 1,
-        sum +. matrix.unsafe_get(l, i, k) *. matrix.unsafe_get(l, j, k),
-      )
+fn cholesky_dot(l: Matrix, i: Int, j: Int) -> Result(Float, NlaError) {
+  case
+    numerics.checked_dot_pairs(
+      list.map(matrix.indices(j), fn(k) {
+        #(matrix.unsafe_get(l, i, k), matrix.unsafe_get(l, j, k))
+      }),
+    )
+  {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(ArithmeticOverflow("Cholesky inner product"))
   }
 }
 
@@ -350,12 +394,13 @@ fn lu_loop(
   l: Matrix,
   p: Matrix,
   swaps: Int,
+  scale: Float,
 ) -> Result(LU, NlaError) {
   case k >= n {
     True -> Ok(LU(l: l, u: u, p: p, swaps: swaps))
     False -> {
       let #(pivot, magnitude) = pivot_row(u, k, n)
-      case magnitude <=. pivot_tolerance {
+      case singular_magnitude(magnitude, scale) {
         True -> Error(SingularMatrix(k))
         False -> {
           let #(u, l, p, swaps) = case pivot == k {
@@ -367,8 +412,10 @@ fn lu_loop(
               #(next_u, next_l, next_p, swaps + 1)
             }
           }
-          let #(u, l) = eliminate_below(u, l, k, k + 1, n)
-          lu_loop(k + 1, n, u, l, p, swaps)
+          case eliminate_below(u, l, k, k + 1, n) {
+            Error(e) -> Error(e)
+            Ok(#(u, l)) -> lu_loop(k + 1, n, u, l, p, swaps, scale)
+          }
         }
       }
     }
@@ -383,18 +430,21 @@ fn complete_lu_loop(
   p: Matrix,
   q: Matrix,
   swaps: Int,
+  scale: Float,
 ) -> Result(CompleteLU, NlaError) {
   case k >= n {
     True -> Ok(CompleteLU(l: l, u: u, p: p, q: q, swaps: swaps))
     False -> {
       let #(pivot_i, pivot_j, magnitude) = complete_pivot(u, k, n)
-      case magnitude <=. pivot_tolerance {
+      case singular_magnitude(magnitude, scale) {
         True -> Error(SingularMatrix(k))
         False -> {
           let #(u, l, p, swaps) = swap_complete_rows(u, l, p, k, pivot_i, swaps)
           let #(u, q, swaps) = swap_complete_cols(u, q, k, pivot_j, swaps)
-          let #(u, l) = eliminate_below(u, l, k, k + 1, n)
-          complete_lu_loop(k + 1, n, u, l, p, q, swaps)
+          case eliminate_below(u, l, k, k + 1, n) {
+            Error(e) -> Error(e)
+            Ok(#(u, l)) -> complete_lu_loop(k + 1, n, u, l, p, q, swaps, scale)
+          }
         }
       }
     }
@@ -465,24 +515,55 @@ fn eliminate_below(
   k: Int,
   i: Int,
   n: Int,
-) -> #(Matrix, Matrix) {
+) -> Result(#(Matrix, Matrix), NlaError) {
   case i >= n {
-    True -> #(u, l)
+    True -> Ok(#(u, l))
     False -> {
       let pivot = matrix.unsafe_get(u, k, k)
-      let factor = matrix.unsafe_get(u, i, k) /. pivot
-      let assert Ok(next_l) = matrix.set(l, i, k, factor)
-      let next_u =
-        list.fold(list.drop(matrix.indices(n), up_to: k), u, fn(acc, j) {
-          let updated =
-            matrix.unsafe_get(acc, i, j)
-            -. factor
-            *. matrix.unsafe_get(acc, k, j)
-          let assert Ok(next) = matrix.set(acc, i, j, updated)
-          next
-        })
-      eliminate_below(next_u, next_l, k, i + 1, n)
+      case numerics.checked_divide(matrix.unsafe_get(u, i, k), pivot) {
+        Error(_) -> Error(ArithmeticOverflow("LU elimination factor"))
+        Ok(factor) ->
+          case matrix.set(l, i, k, factor) {
+            Error(e) -> Error(e)
+            Ok(next_l) ->
+              case eliminate_row(u, i, k, k, n, factor) {
+                Error(e) -> Error(e)
+                Ok(next_u) -> eliminate_below(next_u, next_l, k, i + 1, n)
+              }
+          }
+      }
     }
+  }
+}
+
+fn eliminate_row(
+  u: Matrix,
+  row: Int,
+  pivot_row: Int,
+  col: Int,
+  n: Int,
+  factor: Float,
+) -> Result(Matrix, NlaError) {
+  case col >= n {
+    True -> Ok(u)
+    False ->
+      case
+        numerics.checked_multiply(factor, matrix.unsafe_get(u, pivot_row, col))
+      {
+        Error(_) -> Error(ArithmeticOverflow("LU row update"))
+        Ok(product) ->
+          case
+            numerics.checked_subtract(matrix.unsafe_get(u, row, col), product)
+          {
+            Error(_) -> Error(ArithmeticOverflow("LU row update"))
+            Ok(updated) ->
+              case matrix.set(u, row, col, updated) {
+                Error(e) -> Error(e)
+                Ok(next) ->
+                  eliminate_row(next, row, pivot_row, col + 1, n, factor)
+              }
+          }
+      }
   }
 }
 
@@ -521,12 +602,15 @@ fn swap_columns(a: Matrix, left: Int, right: Int) -> Matrix {
 }
 
 fn is_symmetric(a: Matrix, tolerance: Float) -> Bool {
+  let scale = matrix.norm_inf(a)
   list.all(matrix.indices(matrix.rows(a)), satisfying: fn(i) {
     list.all(matrix.indices(i), satisfying: fn(j) {
-      float.absolute_value(
-        matrix.unsafe_get(a, i, j) -. matrix.unsafe_get(a, j, i),
+      numerics.relative_close_at_scale(
+        matrix.unsafe_get(a, i, j),
+        matrix.unsafe_get(a, j, i),
+        scale,
+        tolerance,
       )
-      <=. tolerance
     })
   })
 }
@@ -536,21 +620,24 @@ fn forward_loop(
   b: Vector,
   i: Int,
   solved: List(Float),
+  scale: Float,
 ) -> Result(Vector, NlaError) {
   case i >= matrix.rows(l) {
     True -> Ok(vector.from_list(solved))
     False -> {
       let diagonal = matrix.unsafe_get(l, i, i)
-      case float.absolute_value(diagonal) <=. pivot_tolerance {
+      case singular_magnitude(float.absolute_value(diagonal), scale) {
         True -> Error(SingularMatrix(i))
         False -> {
           let rhs = unsafe_vector_get(b, i)
-          let lower_sum =
-            list.fold(matrix.indices(i), 0.0, fn(acc, j) {
-              acc +. matrix.unsafe_get(l, i, j) *. unsafe_at(solved, j)
+          let pairs =
+            list.map(matrix.indices(i), fn(j) {
+              #(matrix.unsafe_get(l, i, j), unsafe_at(solved, j))
             })
-          let x = { rhs -. lower_sum } /. diagonal
-          forward_loop(l, b, i + 1, list.append(solved, [x]))
+          case checked_substitution_value(rhs, pairs, diagonal, "forward") {
+            Error(e) -> Error(e)
+            Ok(x) -> forward_loop(l, b, i + 1, list.append(solved, [x]), scale)
+          }
         }
       }
     }
@@ -562,27 +649,27 @@ fn back_loop(
   b: Vector,
   i: Int,
   solved_tail: List(Float),
+  scale: Float,
 ) -> Result(Vector, NlaError) {
   case i < 0 {
     True -> Ok(vector.from_list(solved_tail))
     False -> {
       let diagonal = matrix.unsafe_get(u, i, i)
-      case float.absolute_value(diagonal) <=. pivot_tolerance {
+      case singular_magnitude(float.absolute_value(diagonal), scale) {
         True -> Error(SingularMatrix(i))
         False -> {
           let rhs = unsafe_vector_get(b, i)
-          let upper_sum =
-            list.fold(
+          let pairs =
+            list.map(
               list.drop(matrix.indices(matrix.rows(u)), up_to: i + 1),
-              0.0,
-              fn(acc, j) {
-                acc
-                +. matrix.unsafe_get(u, i, j)
-                *. unsafe_at(solved_tail, j - i - 1)
+              fn(j) {
+                #(matrix.unsafe_get(u, i, j), unsafe_at(solved_tail, j - i - 1))
               },
             )
-          let x = { rhs -. upper_sum } /. diagonal
-          back_loop(u, b, i - 1, [x, ..solved_tail])
+          case checked_substitution_value(rhs, pairs, diagonal, "back") {
+            Error(e) -> Error(e)
+            Ok(x) -> back_loop(u, b, i - 1, [x, ..solved_tail], scale)
+          }
         }
       }
     }
@@ -644,9 +731,50 @@ fn inverse_complete_columns(
   }
 }
 
+fn checked_diagonal_product(a: Matrix) -> Result(Float, NlaError) {
+  list.try_fold(
+    over: matrix.indices(matrix.rows(a)),
+    from: 1.0,
+    with: fn(product, index) {
+      case
+        numerics.checked_multiply(product, matrix.unsafe_get(a, index, index))
+      {
+        Ok(value) -> Ok(value)
+        Error(_) -> Error(ArithmeticOverflow("determinant"))
+      }
+    },
+  )
+}
+
+fn checked_substitution_value(
+  rhs: Float,
+  pairs: List(#(Float, Float)),
+  diagonal: Float,
+  direction: String,
+) -> Result(Float, NlaError) {
+  case numerics.checked_dot_pairs(pairs) {
+    Error(_) -> Error(ArithmeticOverflow(direction <> " substitution sum"))
+    Ok(sum) ->
+      case numerics.checked_subtract(rhs, sum) {
+        Error(_) ->
+          Error(ArithmeticOverflow(direction <> " substitution update"))
+        Ok(numerator) ->
+          case numerics.checked_divide(numerator, diagonal) {
+            Ok(value) -> Ok(value)
+            Error(_) ->
+              Error(ArithmeticOverflow(direction <> " substitution division"))
+          }
+      }
+  }
+}
+
 fn unsafe_vector_get(values: Vector, index: Int) -> Float {
   let assert Ok(value) = vector.get(values, index)
   value
+}
+
+fn singular_magnitude(magnitude: Float, scale: Float) -> Bool {
+  numerics.relative_near_zero(magnitude, scale, pivot_tolerance)
 }
 
 fn unsafe_vector_at(vectors: List(Vector), index: Int) -> Vector {

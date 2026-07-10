@@ -1,0 +1,11 @@
+name = "nla_weird_matrix_tests"
+version = "0.1.0"
+description = "External stress tests for the local lumatrix package"
+licences = ["MIT"]
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+lumatrix = { path = ".." }
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"

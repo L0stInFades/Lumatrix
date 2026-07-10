@@ -3,9 +3,11 @@ import gleam/int
 import gleam/list
 import gleam/order
 import lumatrix/error.{
-  type NlaError, DimensionMismatch, InvalidInput, NoConvergence,
+  type NlaError, DimensionMismatch, InternalInvariant, InvalidInput,
+  NoConvergence, NonFiniteInput,
 }
 import lumatrix/matrix.{type Matrix}
+import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
 const default_max_sweeps = 80
@@ -61,20 +63,24 @@ pub fn decompose_with(
   case validate_options(max_sweeps, tolerance) {
     Error(e) -> Error(e)
     Ok(_) ->
-      case matrix.rows(a) >= matrix.cols(a) {
-        True -> decompose_tall(a, max_sweeps, tolerance)
-        False ->
-          case decompose_tall(matrix.transpose(a), max_sweeps, tolerance) {
-            Error(e) -> Error(e)
-            Ok(transposed) ->
-              Ok(SVD(
-                u: matrix.transpose(transposed.vt),
-                singular_values: transposed.singular_values,
-                vt: matrix.transpose(transposed.u),
-                iterations: transposed.iterations,
-                converged: transposed.converged,
-                off_diagonal_norm: transposed.off_diagonal_norm,
-              ))
+      case matrix.is_finite(a) {
+        False -> Error(NonFiniteInput("SVD matrix"))
+        True ->
+          case matrix.rows(a) >= matrix.cols(a) {
+            True -> decompose_tall(a, max_sweeps, tolerance)
+            False ->
+              case decompose_tall(matrix.transpose(a), max_sweeps, tolerance) {
+                Error(e) -> Error(e)
+                Ok(transposed) ->
+                  Ok(SVD(
+                    u: matrix.transpose(transposed.vt),
+                    singular_values: transposed.singular_values,
+                    vt: matrix.transpose(transposed.u),
+                    iterations: transposed.iterations,
+                    converged: transposed.converged,
+                    off_diagonal_norm: transposed.off_diagonal_norm,
+                  ))
+              }
           }
       }
   }
@@ -340,7 +346,7 @@ fn rotate_pair_if_needed(
     True -> Ok(#(work, v))
     False ->
       case float.square_root(product) {
-        Error(_) -> Error(InvalidInput("cannot compute Jacobi pair norm"))
+        Error(_) -> Error(InternalInvariant("Jacobi pair norm"))
         Ok(denominator) ->
           case float.absolute_value(stats.gamma) <=. tolerance *. denominator {
             True -> Ok(#(work, v))
@@ -362,15 +368,22 @@ fn rotate_pair_if_needed(
 }
 
 fn jacobi_rotation(alpha: Float, beta: Float, gamma: Float) -> #(Float, Float) {
-  let tau = { beta -. alpha } /. { 2.0 *. gamma }
-  let t = case float.absolute_value(tau) >. 1.0e150 {
-    True -> 0.5 /. tau
-    False -> {
-      let assert Ok(root) = float.square_root(1.0 +. tau *. tau)
-      sign(tau) /. { float.absolute_value(tau) +. root }
-    }
+  let delta = beta -. alpha
+  let twice_gamma = 2.0 *. gamma
+  let t = case gamma == 0.0, delta == 0.0 {
+    True, _ -> 0.0
+    False, True -> 1.0
+    False, False ->
+      case numerics.hypot(delta, twice_gamma) {
+        Error(_) -> 0.0
+        Ok(root) if root <=. 0.0 -> 0.0
+        Ok(root) ->
+          sign(delta)
+          *. { twice_gamma /. root }
+          /. { float.absolute_value(delta) /. root +. 1.0 }
+      }
   }
-  let assert Ok(c) = float.square_root(1.0 /. { 1.0 +. t *. t })
+  let c = reciprocal_hypot(1.0, t)
   #(c, c *. t)
 }
 
@@ -524,6 +537,16 @@ fn orthogonalize(
   column: Vector,
   used_reversed: List(Vector),
 ) -> Result(Vector, NlaError) {
+  case orthogonalize_once(column, used_reversed) {
+    Error(e) -> Error(e)
+    Ok(first_pass) -> orthogonalize_once(first_pass, used_reversed)
+  }
+}
+
+fn orthogonalize_once(
+  column: Vector,
+  used_reversed: List(Vector),
+) -> Result(Vector, NlaError) {
   list.try_fold(over: used_reversed, from: column, with: fn(acc, q) {
     case vector.dot(acc, q) {
       Error(e) -> Error(e)
@@ -579,40 +602,31 @@ fn pair_stats(work: Matrix, p: Int, q: Int) -> PairStats {
     })
   case scale <=. 0.0 {
     True -> PairStats(alpha: 0.0, beta: 0.0, gamma: 0.0)
-    False ->
-      list.fold(
-        matrix.indices(matrix.rows(work)),
-        PairStats(alpha: 0.0, beta: 0.0, gamma: 0.0),
-        fn(stats, i) {
+    False -> {
+      let rows = matrix.indices(matrix.rows(work))
+      PairStats(
+        alpha: numerics.compensated_sum_map(rows, fn(i) {
+          let x = matrix.unsafe_get(work, i, p) /. scale
+          x *. x
+        }),
+        beta: numerics.compensated_sum_map(rows, fn(i) {
+          let y = matrix.unsafe_get(work, i, q) /. scale
+          y *. y
+        }),
+        gamma: numerics.compensated_sum_map(rows, fn(i) {
           let x = matrix.unsafe_get(work, i, p) /. scale
           let y = matrix.unsafe_get(work, i, q) /. scale
-          PairStats(
-            alpha: stats.alpha +. x *. x,
-            beta: stats.beta +. y *. y,
-            gamma: stats.gamma +. x *. y,
-          )
-        },
+          x *. y
+        }),
       )
+    }
   }
 }
 
 fn stable_norm(column: Vector) -> Float {
-  let values = vector.to_list(column)
-  let scale =
-    list.fold(values, 0.0, fn(best, value) {
-      float.max(best, float.absolute_value(value))
-    })
-  case scale <=. 0.0 {
-    True -> 0.0
-    False -> {
-      let sum =
-        list.fold(values, 0.0, fn(acc, value) {
-          let scaled = value /. scale
-          acc +. scaled *. scaled
-        })
-      let assert Ok(root) = float.square_root(sum)
-      scale *. root
-    }
+  case numerics.norm2(vector.to_list(column)) {
+    Ok(value) -> value
+    Error(_) -> 0.0
   }
 }
 
@@ -652,9 +666,10 @@ fn validate_options(
 }
 
 fn validate_tolerance(tolerance: Float) -> Result(Nil, NlaError) {
-  case tolerance >. 0.0 {
-    True -> Ok(Nil)
-    False -> Error(InvalidInput("tolerance must be positive"))
+  case numerics.is_finite(tolerance) {
+    False -> Error(NonFiniteInput("SVD tolerance"))
+    True if tolerance >. 0.0 -> Ok(Nil)
+    True -> Error(InvalidInput("tolerance must be positive"))
   }
 }
 
@@ -673,6 +688,13 @@ fn sign(value: Float) -> Float {
   case value <. 0.0 {
     True -> -1.0
     False -> 1.0
+  }
+}
+
+fn reciprocal_hypot(a: Float, b: Float) -> Float {
+  case numerics.hypot(a, b) {
+    Ok(value) if value >. 0.0 -> 1.0 /. value
+    _ -> 0.0
   }
 }
 

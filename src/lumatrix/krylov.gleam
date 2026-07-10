@@ -1,10 +1,15 @@
 import gleam/float
 import gleam/int
 import gleam/list
-import lumatrix/error.{type NlaError, DimensionMismatch, InvalidInput, NotSquare}
+import gleam/result
+import lumatrix/error.{
+  type NlaError, ArithmeticOverflow, DimensionMismatch, InternalInvariant,
+  InvalidInput, NonFiniteInput, NotSquare,
+}
 import lumatrix/error_analysis
 import lumatrix/least_squares
 import lumatrix/matrix.{type Matrix}
+import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
 const breakdown_tolerance = 1.0e-12
@@ -27,13 +32,32 @@ pub type GmresResult {
   )
 }
 
+type ScaledSystem {
+  ScaledSystem(
+    a: Matrix,
+    b: Vector,
+    initial: Vector,
+    scale: Float,
+    tolerance: Float,
+  )
+}
+
+type MinresRotationScalars {
+  MinresRotationScalars(
+    delta: Float,
+    gbar: Float,
+    next_epsln: Float,
+    next_dbar: Float,
+  )
+}
+
 pub fn arnoldi(
   a: Matrix,
   initial: Vector,
   steps: Int,
   tolerance: Float,
 ) -> Result(ArnoldiResult, NlaError) {
-  case validate(a, initial, steps) {
+  case validate(a, initial, steps, tolerance) {
     Error(e) -> Error(e)
     Ok(_) ->
       case vector.normalize(initial) {
@@ -49,7 +73,7 @@ pub fn lanczos(
   steps: Int,
   tolerance: Float,
 ) -> Result(LanczosResult, NlaError) {
-  case validate_symmetric(a, initial, steps, 1.0e-10) {
+  case validate_symmetric(a, initial, steps, tolerance, 1.0e-10) {
     Error(e) -> Error(e)
     Ok(_) ->
       case vector.normalize(initial) {
@@ -69,9 +93,19 @@ pub fn gmres(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(GmresResult, NlaError) {
-  case validate_system(a, b, initial, max_iterations) {
+  case prepare_system(a, b, initial, max_iterations, tolerance) {
     Error(e) -> Error(e)
-    Ok(_) -> gmres_cycle(a, b, initial, max_iterations, tolerance)
+    Ok(system) ->
+      finish_scaled_result(
+        gmres_cycle(
+          system.a,
+          system.b,
+          system.initial,
+          max_iterations,
+          system.tolerance,
+        ),
+        system.scale,
+      )
   }
 }
 
@@ -86,18 +120,21 @@ pub fn restarted_gmres(
   case restart <= 0 {
     True -> Error(InvalidInput("GMRES restart must be positive"))
     False ->
-      case validate_system(a, b, initial, max_iterations) {
+      case prepare_system(a, b, initial, max_iterations, tolerance) {
         Error(e) -> Error(e)
-        Ok(_) ->
-          restarted_gmres_loop(
-            a,
-            b,
-            initial,
-            0,
-            restart,
-            max_iterations,
-            tolerance,
-            False,
+        Ok(system) ->
+          finish_scaled_result(
+            restarted_gmres_loop(
+              system.a,
+              system.b,
+              system.initial,
+              0,
+              restart,
+              max_iterations,
+              system.tolerance,
+              False,
+            ),
+            system.scale,
           )
       }
   }
@@ -110,12 +147,24 @@ pub fn bicg(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(GmresResult, NlaError) {
-  case validate_system(a, b, initial, max_iterations) {
+  case prepare_system(a, b, initial, max_iterations, tolerance) {
     Error(e) -> Error(e)
-    Ok(_) ->
-      case error_analysis.residual(a, initial, b) {
+    Ok(system) ->
+      case error_analysis.residual(system.a, system.initial, system.b) {
         Error(e) -> Error(e)
-        Ok(r0) -> bicg_start(a, b, initial, r0, r0, max_iterations, tolerance)
+        Ok(r0) ->
+          finish_scaled_result(
+            bicg_start(
+              system.a,
+              system.b,
+              system.initial,
+              r0,
+              r0,
+              max_iterations,
+              system.tolerance,
+            ),
+            system.scale,
+          )
       }
   }
 }
@@ -128,21 +177,34 @@ pub fn bicg_with_shadow(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(GmresResult, NlaError) {
-  case validate_bicg_system(a, b, initial, shadow_residual, max_iterations) {
+  case prepare_system(a, b, initial, max_iterations, tolerance) {
     Error(e) -> Error(e)
-    Ok(_) ->
-      case error_analysis.residual(a, initial, b) {
+    Ok(system) ->
+      case
+        validate_shadow_residual(shadow_residual, vector.dimension(system.b))
+      {
         Error(e) -> Error(e)
-        Ok(r0) ->
-          bicg_start(
-            a,
-            b,
-            initial,
-            r0,
-            shadow_residual,
-            max_iterations,
-            tolerance,
-          )
+        Ok(_) ->
+          case vector.divide(shadow_residual, system.scale) {
+            Error(e) -> Error(e)
+            Ok(scaled_shadow) ->
+              case error_analysis.residual(system.a, system.initial, system.b) {
+                Error(e) -> Error(e)
+                Ok(r0) ->
+                  finish_scaled_result(
+                    bicg_start(
+                      system.a,
+                      system.b,
+                      system.initial,
+                      r0,
+                      scaled_shadow,
+                      max_iterations,
+                      system.tolerance,
+                    ),
+                    system.scale,
+                  )
+              }
+          }
       }
   }
 }
@@ -154,29 +216,32 @@ pub fn bicgstab(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(GmresResult, NlaError) {
-  case validate_system(a, b, initial, max_iterations) {
+  case prepare_system(a, b, initial, max_iterations, tolerance) {
     Error(e) -> Error(e)
-    Ok(_) ->
-      case error_analysis.residual(a, initial, b) {
+    Ok(system) ->
+      case error_analysis.residual(system.a, system.initial, system.b) {
         Error(e) -> Error(e)
         Ok(r0) ->
-          case vector.zeros(vector.dimension(b)) {
+          case vector.zeros(vector.dimension(system.b)) {
             Error(e) -> Error(e)
             Ok(zero) ->
-              bicgstab_loop(
-                a,
-                b,
-                initial,
-                r0,
-                r0,
-                zero,
-                zero,
-                1.0,
-                1.0,
-                1.0,
-                0,
-                max_iterations,
-                tolerance,
+              finish_scaled_result(
+                bicgstab_loop(
+                  system.a,
+                  system.b,
+                  system.initial,
+                  r0,
+                  r0,
+                  zero,
+                  zero,
+                  1.0,
+                  1.0,
+                  1.0,
+                  0,
+                  max_iterations,
+                  system.tolerance,
+                ),
+                system.scale,
               )
           }
       }
@@ -190,45 +255,55 @@ pub fn minres(
   max_iterations: Int,
   tolerance: Float,
 ) -> Result(GmresResult, NlaError) {
-  case validate_symmetric_system(a, b, initial, max_iterations, 1.0e-10) {
+  case prepare_system(a, b, initial, max_iterations, tolerance) {
     Error(e) -> Error(e)
-    Ok(_) ->
-      case error_analysis.residual(a, initial, b) {
-        Error(e) -> Error(e)
-        Ok(r0) ->
-          case vector.norm2(r0) {
+    Ok(system) ->
+      case is_symmetric(system.a, 1.0e-10) {
+        False -> Error(InvalidInput("MINRES matrix must be symmetric"))
+        True ->
+          case error_analysis.residual(system.a, system.initial, system.b) {
             Error(e) -> Error(e)
-            Ok(beta0) if beta0 <=. tolerance ->
-              Ok(GmresResult(
-                solution: initial,
-                iterations: 0,
-                residual_norm: beta0,
-                converged: True,
-                happy_breakdown: False,
-              ))
-            Ok(beta0) -> {
-              let assert Ok(zero) = vector.zeros(matrix.rows(a))
-              minres_short_loop(
-                a,
-                b,
-                initial,
-                r0,
-                r0,
-                beta0,
-                0.0,
-                zero,
-                zero,
-                -1.0,
-                0.0,
-                0.0,
-                0.0,
-                beta0,
-                0,
-                max_iterations,
-                tolerance,
-                False,
-              )
-            }
+            Ok(r0) ->
+              case vector.norm2(r0) {
+                Error(e) -> Error(e)
+                Ok(beta0) if beta0 <=. system.tolerance ->
+                  finish_scaled_result(
+                    Ok(GmresResult(
+                      solution: system.initial,
+                      iterations: 0,
+                      residual_norm: beta0,
+                      converged: True,
+                      happy_breakdown: False,
+                    )),
+                    system.scale,
+                  )
+                Ok(beta0) -> {
+                  let assert Ok(zero) = vector.zeros(matrix.rows(system.a))
+                  finish_scaled_result(
+                    minres_short_loop(
+                      system.a,
+                      system.b,
+                      system.initial,
+                      r0,
+                      r0,
+                      beta0,
+                      0.0,
+                      zero,
+                      zero,
+                      -1.0,
+                      0.0,
+                      0.0,
+                      0.0,
+                      beta0,
+                      0,
+                      max_iterations,
+                      system.tolerance,
+                      False,
+                    ),
+                    system.scale,
+                  )
+                }
+              }
           }
       }
   }
@@ -262,32 +337,40 @@ fn lanczos_loop(
                     Error(e) -> Error(e)
                     Ok(beta) -> {
                       let completed_steps = k + 1
-                      case
-                        beta <=. tolerance
-                        || completed_steps >= requested_steps
-                        || completed_steps >= matrix.rows(a)
-                      {
-                        True ->
-                          build_lanczos_result(
-                            matrix.rows(a),
-                            vectors,
-                            entries,
-                            completed_steps,
-                            beta <=. tolerance,
-                          )
-                        False -> {
-                          let next_q = vector.scale(w, 1.0 /. beta)
-                          lanczos_loop(
-                            a,
-                            requested_steps,
-                            tolerance,
-                            k + 1,
-                            qk,
-                            beta,
-                            list.append(vectors, [next_q]),
-                            [#(k, k + 1, beta), #(k + 1, k, beta), ..entries],
-                          )
-                        }
+                      case vector_breakdown(beta, aq, tolerance) {
+                        Error(e) -> Error(e)
+                        Ok(happy_breakdown) ->
+                          case
+                            happy_breakdown
+                            || completed_steps >= requested_steps
+                            || completed_steps >= matrix.rows(a)
+                          {
+                            True ->
+                              build_lanczos_result(
+                                matrix.rows(a),
+                                vectors,
+                                entries,
+                                completed_steps,
+                                happy_breakdown,
+                              )
+                            False -> {
+                              let assert Ok(next_q) = vector.normalize(w)
+                              lanczos_loop(
+                                a,
+                                requested_steps,
+                                tolerance,
+                                k + 1,
+                                qk,
+                                beta,
+                                list.append(vectors, [next_q]),
+                                [
+                                  #(k, k + 1, beta),
+                                  #(k + 1, k, beta),
+                                  ..entries
+                                ],
+                              )
+                            }
+                          }
                       }
                     }
                   }
@@ -321,12 +404,13 @@ fn bicg_start(
       case vector.dot(shadow_residual, r0) {
         Error(e) -> Error(e)
         Ok(rho) ->
-          case float.absolute_value(rho) <=. breakdown_tolerance {
-            True ->
+          case dot_breakdown(rho, shadow_residual, r0) {
+            Error(e) -> Error(e)
+            Ok(True) ->
               Error(InvalidInput(
                 "BiCG shadow residual is orthogonal to the residual",
               ))
-            False ->
+            Ok(False) ->
               bicg_loop(
                 a,
                 b,
@@ -406,13 +490,18 @@ fn bicg_step(
           case vector.dot(shadow_p, ap) {
             Error(e) -> Error(e)
             Ok(denominator) ->
-              case float.absolute_value(denominator) <=. breakdown_tolerance {
-                True ->
+              case dot_breakdown(denominator, shadow_p, ap) {
+                Error(e) -> Error(e)
+                Ok(True) ->
                   Error(InvalidInput(
                     "BiCG breakdown: search directions are nearly A-orthogonal",
                   ))
-                False -> {
-                  let alpha = rho /. denominator
+                Ok(False) -> {
+                  use alpha <- result.try(checked_scalar_divide(
+                    rho,
+                    denominator,
+                    "BiCG alpha",
+                  ))
                   case vector.axpy(alpha, p, x) {
                     Error(e) -> Error(e)
                     Ok(next_x) ->
@@ -458,8 +547,9 @@ fn bicg_finish_step(
       case vector.norm2(next_r) {
         Error(e) -> Error(e)
         Ok(r_norm) ->
-          case float.absolute_value(next_rho) <=. breakdown_tolerance {
-            True ->
+          case dot_breakdown(next_rho, next_shadow_r, next_r) {
+            Error(e) -> Error(e)
+            Ok(True) ->
               case r_norm <=. tolerance {
                 True ->
                   Ok(#(
@@ -475,8 +565,12 @@ fn bicg_finish_step(
                     "BiCG breakdown: shadow residual became orthogonal",
                   ))
               }
-            False -> {
-              let beta = next_rho /. rho
+            Ok(False) -> {
+              use beta <- result.try(checked_scalar_divide(
+                next_rho,
+                rho,
+                "BiCG beta",
+              ))
               case vector.axpy(beta, p, next_r) {
                 Error(e) -> Error(e)
                 Ok(next_p) ->
@@ -595,14 +689,30 @@ fn bicgstab_step(
   case vector.dot(shadow_r0, r) {
     Error(e) -> Error(e)
     Ok(rho) ->
-      case float.absolute_value(rho) <=. breakdown_tolerance {
-        True -> Error(InvalidInput("BiCGSTAB breakdown: rho is nearly zero"))
-        False ->
-          case float.absolute_value(omega) <=. breakdown_tolerance {
+      case dot_breakdown(rho, shadow_r0, r) {
+        Error(e) -> Error(e)
+        Ok(True) ->
+          Error(InvalidInput("BiCGSTAB breakdown: rho is nearly zero"))
+        Ok(False) ->
+          case float.absolute_value(omega) <=. 0.0 {
             True ->
               Error(InvalidInput("BiCGSTAB breakdown: omega is nearly zero"))
             False -> {
-              let beta = rho /. rho_old *. alpha /. omega
+              use rho_ratio <- result.try(checked_scalar_divide(
+                rho,
+                rho_old,
+                "BiCGSTAB beta rho ratio",
+              ))
+              use alpha_ratio <- result.try(checked_scalar_divide(
+                alpha,
+                omega,
+                "BiCGSTAB beta alpha ratio",
+              ))
+              use beta <- result.try(checked_scalar_multiply(
+                rho_ratio,
+                alpha_ratio,
+                "BiCGSTAB beta",
+              ))
               case bicgstab_search_direction(r, p, v, beta, omega) {
                 Error(e) -> Error(e)
                 Ok(next_p) ->
@@ -657,13 +767,18 @@ fn bicgstab_stabilize(
   case vector.dot(shadow_r0, v) {
     Error(e) -> Error(e)
     Ok(denominator) ->
-      case float.absolute_value(denominator) <=. breakdown_tolerance {
-        True ->
+      case dot_breakdown(denominator, shadow_r0, v) {
+        Error(e) -> Error(e)
+        Ok(True) ->
           Error(InvalidInput(
             "BiCGSTAB breakdown: alpha denominator is nearly zero",
           ))
-        False -> {
-          let next_alpha = rho /. denominator
+        Ok(False) -> {
+          use next_alpha <- result.try(checked_scalar_divide(
+            rho,
+            denominator,
+            "BiCGSTAB alpha",
+          ))
           case vector.axpy(0.0 -. next_alpha, v, r) {
             Error(e) -> Error(e)
             Ok(s) ->
@@ -728,17 +843,22 @@ fn bicgstab_after_t(
   case vector.dot(t, t) {
     Error(e) -> Error(e)
     Ok(tt) ->
-      case float.absolute_value(tt) <=. breakdown_tolerance {
-        True ->
+      case dot_breakdown(tt, t, t) {
+        Error(e) -> Error(e)
+        Ok(True) ->
           Error(InvalidInput(
             "BiCGSTAB breakdown: stabilizing direction vanished",
           ))
-        False ->
+        Ok(False) ->
           case vector.dot(t, s) {
             Error(e) -> Error(e)
             Ok(ts) -> {
-              let omega = ts /. tt
-              case float.absolute_value(omega) <=. breakdown_tolerance {
+              use omega <- result.try(checked_scalar_divide(
+                ts,
+                tt,
+                "BiCGSTAB omega",
+              ))
+              case float.absolute_value(omega) <=. 0.0 {
                 True ->
                   Error(InvalidInput("BiCGSTAB breakdown: omega is nearly zero"))
                 False -> bicgstab_finish_step(x, s, t, p, v, rho, alpha, omega)
@@ -807,17 +927,22 @@ fn minres_short_loop(
   case iteration >= max_iterations || happy_breakdown {
     True -> finish_solver(a, b, x, iteration, tolerance, happy_breakdown)
     False ->
-      case beta <=. breakdown_tolerance {
+      case beta <=. 0.0 {
         True -> finish_solver(a, b, x, iteration, tolerance, True)
         False -> {
-          let v = vector.scale(r_curr, 1.0 /. beta)
+          let assert Ok(v) = vector.normalize(r_curr)
           case minres_lanczos_step(a, v, r_prev, beta, old_beta, iteration) {
             Error(e) -> Error(e)
             Ok(y0) ->
               case vector.dot(v, y0) {
                 Error(e) -> Error(e)
-                Ok(alpha) ->
-                  case vector.axpy(0.0 -. alpha /. beta, r_curr, y0) {
+                Ok(alpha) -> {
+                  use coefficient <- result.try(checked_scalar_divide(
+                    alpha,
+                    beta,
+                    "MINRES Lanczos coefficient",
+                  ))
+                  case vector.axpy(0.0 -. coefficient, r_curr, y0) {
                     Error(e) -> Error(e)
                     Ok(next_r) ->
                       case vector.norm2(next_r) {
@@ -846,6 +971,7 @@ fn minres_short_loop(
                           )
                       }
                   }
+                }
               }
           }
         }
@@ -865,7 +991,18 @@ fn minres_lanczos_step(
     Error(e) -> Error(e)
     Ok(av) ->
       case iteration >= 1 {
-        True -> vector.axpy(0.0 -. beta /. old_beta, r_prev, av)
+        True ->
+          case old_beta <=. 0.0 {
+            True -> Error(InternalInvariant("MINRES previous beta"))
+            False -> {
+              use coefficient <- result.try(checked_scalar_divide(
+                beta,
+                old_beta,
+                "MINRES previous-vector coefficient",
+              ))
+              vector.axpy(0.0 -. coefficient, r_prev, av)
+            }
+          }
         False -> Ok(av)
       }
   }
@@ -893,20 +1030,39 @@ fn minres_rotate_and_update(
   tolerance: Float,
 ) -> Result(GmresResult, NlaError) {
   let oldeps = epsln
-  let delta = cs *. dbar +. sn *. alpha
-  let gbar = sn *. dbar -. cs *. alpha
-  let next_epsln = sn *. next_beta
-  let next_dbar = 0.0 -. cs *. next_beta
-  case float.square_root(gbar *. gbar +. next_beta *. next_beta) {
-    Error(_) -> Error(InvalidInput("MINRES rotation norm is invalid"))
-    Ok(gamma) if gamma <=. breakdown_tolerance ->
+  use scalars <- result.try(minres_rotation_scalars(
+    cs,
+    sn,
+    dbar,
+    alpha,
+    next_beta,
+  ))
+  case numerics.hypot(scalars.gbar, next_beta) {
+    Error(_) -> Error(ArithmeticOverflow("MINRES rotation norm"))
+    Ok(gamma) if gamma <=. 0.0 ->
       finish_solver(a, b, x, iteration, tolerance, True)
     Ok(gamma) -> {
-      let next_cs = gbar /. gamma
-      let next_sn = next_beta /. gamma
-      let phi = next_cs *. phibar
-      let next_phibar = next_sn *. phibar
-      case minres_direction(v, oldeps, w_older, delta, w_old, gamma) {
+      use next_cs <- result.try(checked_scalar_divide(
+        scalars.gbar,
+        gamma,
+        "MINRES cosine",
+      ))
+      use next_sn <- result.try(checked_scalar_divide(
+        next_beta,
+        gamma,
+        "MINRES sine",
+      ))
+      use phi <- result.try(checked_scalar_multiply(
+        next_cs,
+        phibar,
+        "MINRES phi",
+      ))
+      use next_phibar <- result.try(checked_scalar_multiply(
+        next_sn,
+        phibar,
+        "MINRES residual recurrence",
+      ))
+      case minres_direction(v, oldeps, w_older, scalars.delta, w_old, gamma) {
         Error(e) -> Error(e)
         Ok(w) ->
           case vector.axpy(phi, w, x) {
@@ -924,8 +1080,8 @@ fn minres_rotate_and_update(
                 w,
                 next_cs,
                 next_sn,
-                next_dbar,
-                next_epsln,
+                scalars.next_dbar,
+                scalars.next_epsln,
                 next_phibar,
                 iteration + 1,
                 max_iterations,
@@ -950,7 +1106,7 @@ fn minres_direction(
     Ok(without_older) ->
       case vector.axpy(0.0 -. delta, w_old, without_older) {
         Error(e) -> Error(e)
-        Ok(direction) -> Ok(vector.scale(direction, 1.0 /. gamma))
+        Ok(direction) -> vector.divide(direction, gamma)
       }
   }
 }
@@ -1052,7 +1208,7 @@ fn arnoldi_loop(
                         True,
                       )
                     False -> {
-                      let next_q = vector.scale(w, 1.0 /. h_next)
+                      let assert Ok(next_q) = vector.normalize(w)
                       arnoldi_loop(
                         a,
                         requested_steps,
@@ -1321,56 +1477,183 @@ fn finish_solver(
   }
 }
 
+fn dot_breakdown(
+  value: Float,
+  left: Vector,
+  right: Vector,
+) -> Result(Bool, NlaError) {
+  case vector.norm2(left) {
+    Error(e) -> Error(e)
+    Ok(left_norm) ->
+      case vector.norm2(right) {
+        Error(e) -> Error(e)
+        Ok(right_norm) if left_norm <=. 0.0 || right_norm <=. 0.0 -> Ok(True)
+        Ok(right_norm) -> {
+          let normalized_pairs =
+            list.zip(vector.to_list(left), with: vector.to_list(right))
+            |> list.map(fn(pair) {
+              #(pair.0 /. left_norm, pair.1 /. right_norm)
+            })
+          case numerics.checked_dot_pairs(normalized_pairs) {
+            Error(_) ->
+              Error(ArithmeticOverflow("normalized Krylov dot product"))
+            Ok(cosine) ->
+              case float.absolute_value(cosine) <=. breakdown_tolerance {
+                True -> Ok(True)
+                False ->
+                  case value == 0.0 {
+                    True ->
+                      Error(ArithmeticOverflow("Krylov dot product underflow"))
+                    False -> Ok(False)
+                  }
+              }
+          }
+        }
+      }
+  }
+}
+
+fn vector_breakdown(
+  value: Float,
+  reference: Vector,
+  tolerance: Float,
+) -> Result(Bool, NlaError) {
+  case vector.norm2(reference) {
+    Error(e) -> Error(e)
+    Ok(reference_norm) ->
+      Ok(numerics.relative_near_zero(value, reference_norm, tolerance))
+  }
+}
+
+fn prepare_system(
+  a: Matrix,
+  b: Vector,
+  initial: Vector,
+  max_iterations: Int,
+  tolerance: Float,
+) -> Result(ScaledSystem, NlaError) {
+  case validate_system(a, b, initial, max_iterations, tolerance) {
+    Error(e) -> Error(e)
+    Ok(_) -> {
+      let raw_scale = float.max(matrix.norm_inf(a), vector.norm_inf(b))
+      let scale = case raw_scale >. 0.0 {
+        True -> raw_scale
+        False -> 1.0
+      }
+      case matrix.divide(a, scale) {
+        Error(e) -> Error(e)
+        Ok(scaled_a) ->
+          case vector.divide(b, scale) {
+            Error(e) -> Error(e)
+            Ok(scaled_b) ->
+              Ok(ScaledSystem(
+                a: scaled_a,
+                b: scaled_b,
+                initial: initial,
+                scale: scale,
+                tolerance: normalized_tolerance(tolerance, scale),
+              ))
+          }
+      }
+    }
+  }
+}
+
+fn normalized_tolerance(tolerance: Float, scale: Float) -> Float {
+  case tolerance <=. 0.0 {
+    True -> 0.0
+    False ->
+      case numerics.checked_divide(tolerance, scale) {
+        Ok(value) -> value
+        Error(_) -> numerics.largest_finite()
+      }
+  }
+}
+
+fn finish_scaled_result(
+  result: Result(GmresResult, NlaError),
+  scale: Float,
+) -> Result(GmresResult, NlaError) {
+  case result {
+    Error(e) -> Error(e)
+    Ok(value) ->
+      case vector.is_finite(value.solution) {
+        False -> Error(ArithmeticOverflow("Krylov solution"))
+        True ->
+          case numerics.checked_multiply(value.residual_norm, scale) {
+            Error(_) -> Error(ArithmeticOverflow("Krylov residual rescaling"))
+            Ok(residual_norm) ->
+              Ok(GmresResult(
+                solution: value.solution,
+                iterations: value.iterations,
+                residual_norm: residual_norm,
+                converged: value.converged,
+                happy_breakdown: value.happy_breakdown,
+              ))
+          }
+      }
+  }
+}
+
+fn validate_shadow_residual(
+  shadow_residual: Vector,
+  expected_size: Int,
+) -> Result(Nil, NlaError) {
+  case vector.dimension(shadow_residual) == expected_size {
+    False ->
+      Error(DimensionMismatch(
+        expected: "shadow residual dimension " <> int.to_string(expected_size),
+        actual: int.to_string(vector.dimension(shadow_residual)),
+      ))
+    True ->
+      case vector.is_finite(shadow_residual) {
+        True -> Ok(Nil)
+        False -> Error(NonFiniteInput("BiCG shadow residual"))
+      }
+  }
+}
+
 fn validate_symmetric(
   a: Matrix,
   initial: Vector,
   steps: Int,
-  tolerance: Float,
+  algorithm_tolerance: Float,
+  symmetry_tolerance: Float,
 ) -> Result(Nil, NlaError) {
-  case validate(a, initial, steps) {
+  case validate(a, initial, steps, algorithm_tolerance) {
     Error(e) -> Error(e)
     Ok(_) ->
-      case is_symmetric(a, tolerance) {
+      case is_symmetric(a, symmetry_tolerance) {
         True -> Ok(Nil)
         False -> Error(InvalidInput("Lanczos matrix must be symmetric"))
       }
   }
 }
 
-fn validate_symmetric_system(
-  a: Matrix,
-  b: Vector,
-  initial: Vector,
-  max_iterations: Int,
-  tolerance: Float,
-) -> Result(Nil, NlaError) {
-  case validate_system(a, b, initial, max_iterations) {
-    Error(e) -> Error(e)
-    Ok(_) ->
-      case is_symmetric(a, tolerance) {
-        True -> Ok(Nil)
-        False -> Error(InvalidInput("MINRES matrix must be symmetric"))
-      }
-  }
-}
-
 fn is_symmetric(a: Matrix, tolerance: Float) -> Bool {
+  let scale = matrix.norm_inf(a)
   list.all(matrix.indices(matrix.rows(a)), satisfying: fn(i) {
     list.all(matrix.indices(matrix.cols(a)), satisfying: fn(j) {
-      float.absolute_value(
-        matrix.unsafe_get(a, i, j) -. matrix.unsafe_get(a, j, i),
+      numerics.relative_close_at_scale(
+        matrix.unsafe_get(a, i, j),
+        matrix.unsafe_get(a, j, i),
+        scale,
+        tolerance,
       )
-      <=. tolerance
     })
   })
 }
 
-fn validate(a: Matrix, initial: Vector, steps: Int) -> Result(Nil, NlaError) {
+fn validate(
+  a: Matrix,
+  initial: Vector,
+  steps: Int,
+  tolerance: Float,
+) -> Result(Nil, NlaError) {
   case matrix.is_square(a) {
     False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
     True ->
-      case matrix.rows(a) == vector.dimension(initial) && steps > 0 {
-        True -> Ok(Nil)
+      case matrix.rows(a) == vector.dimension(initial) {
         False ->
           Error(DimensionMismatch(
             expected: "square matrix dimension "
@@ -1381,6 +1664,11 @@ fn validate(a: Matrix, initial: Vector, steps: Int) -> Result(Nil, NlaError) {
               <> ", steps "
               <> int.to_string(steps),
           ))
+        True ->
+          case matrix.is_finite(a) && vector.is_finite(initial) {
+            False -> Error(NonFiniteInput("Krylov basis inputs"))
+            True -> validate_positive_options(steps, tolerance, "steps")
+          }
       }
   }
 }
@@ -1390,6 +1678,7 @@ fn validate_system(
   b: Vector,
   initial: Vector,
   max_iterations: Int,
+  tolerance: Float,
 ) -> Result(Nil, NlaError) {
   case matrix.is_square(a) {
     False -> Error(NotSquare(matrix.rows(a), matrix.cols(a)))
@@ -1397,9 +1686,7 @@ fn validate_system(
       case
         matrix.rows(a) == vector.dimension(b)
         && vector.dimension(b) == vector.dimension(initial)
-        && max_iterations > 0
       {
-        True -> Ok(Nil)
         False ->
           Error(DimensionMismatch(
             expected: "square matrix dimension "
@@ -1412,29 +1699,117 @@ fn validate_system(
               <> ", iterations="
               <> int.to_string(max_iterations),
           ))
+        True ->
+          case
+            matrix.is_finite(a)
+            && vector.is_finite(b)
+            && vector.is_finite(initial)
+          {
+            False -> Error(NonFiniteInput("Krylov linear system"))
+            True ->
+              validate_positive_options(
+                max_iterations,
+                tolerance,
+                "max_iterations",
+              )
+          }
       }
   }
 }
 
-fn validate_bicg_system(
-  a: Matrix,
-  b: Vector,
-  initial: Vector,
-  shadow_residual: Vector,
-  max_iterations: Int,
+fn validate_positive_options(
+  count: Int,
+  tolerance: Float,
+  count_name: String,
 ) -> Result(Nil, NlaError) {
-  case validate_system(a, b, initial, max_iterations) {
-    Error(e) -> Error(e)
-    Ok(_) ->
-      case vector.dimension(shadow_residual) == vector.dimension(b) {
+  case count <= 0 {
+    True -> Error(InvalidInput(count_name <> " must be positive"))
+    False ->
+      case numerics.is_finite(tolerance) {
+        False -> Error(NonFiniteInput("Krylov tolerance"))
+        True if tolerance <. 0.0 ->
+          Error(InvalidInput("tolerance must be non-negative"))
         True -> Ok(Nil)
-        False ->
-          Error(DimensionMismatch(
-            expected: "shadow residual dimension "
-              <> int.to_string(vector.dimension(b)),
-            actual: int.to_string(vector.dimension(shadow_residual)),
-          ))
       }
+  }
+}
+
+fn minres_rotation_scalars(
+  cs: Float,
+  sn: Float,
+  dbar: Float,
+  alpha: Float,
+  next_beta: Float,
+) -> Result(MinresRotationScalars, NlaError) {
+  use cs_dbar <- result.try(checked_scalar_multiply(cs, dbar, "MINRES delta"))
+  use sn_alpha <- result.try(checked_scalar_multiply(sn, alpha, "MINRES delta"))
+  use delta <- result.try(checked_scalar_add(cs_dbar, sn_alpha, "MINRES delta"))
+  use sn_dbar <- result.try(checked_scalar_multiply(sn, dbar, "MINRES gbar"))
+  use cs_alpha <- result.try(checked_scalar_multiply(cs, alpha, "MINRES gbar"))
+  use gbar <- result.try(checked_scalar_subtract(
+    sn_dbar,
+    cs_alpha,
+    "MINRES gbar",
+  ))
+  use next_epsln <- result.try(checked_scalar_multiply(
+    sn,
+    next_beta,
+    "MINRES epsilon recurrence",
+  ))
+  use next_dbar <- result.try(checked_scalar_multiply(
+    0.0 -. cs,
+    next_beta,
+    "MINRES diagonal recurrence",
+  ))
+  Ok(MinresRotationScalars(
+    delta: delta,
+    gbar: gbar,
+    next_epsln: next_epsln,
+    next_dbar: next_dbar,
+  ))
+}
+
+fn checked_scalar_add(
+  left: Float,
+  right: Float,
+  operation: String,
+) -> Result(Float, NlaError) {
+  case numerics.checked_add(left, right) {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(ArithmeticOverflow(operation))
+  }
+}
+
+fn checked_scalar_subtract(
+  left: Float,
+  right: Float,
+  operation: String,
+) -> Result(Float, NlaError) {
+  case numerics.checked_subtract(left, right) {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(ArithmeticOverflow(operation))
+  }
+}
+
+fn checked_scalar_multiply(
+  left: Float,
+  right: Float,
+  operation: String,
+) -> Result(Float, NlaError) {
+  case numerics.checked_multiply(left, right) {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(ArithmeticOverflow(operation))
+  }
+}
+
+fn checked_scalar_divide(
+  numerator: Float,
+  denominator: Float,
+  operation: String,
+) -> Result(Float, NlaError) {
+  case numerics.checked_divide(numerator, denominator) {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(ArithmeticOverflow(operation))
   }
 }
 

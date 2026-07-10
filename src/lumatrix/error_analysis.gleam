@@ -1,7 +1,10 @@
 import gleam/list
 import lumatrix/direct
-import lumatrix/error.{type NlaError, DimensionMismatch, InvalidInput}
+import lumatrix/error.{
+  type NlaError, ArithmeticOverflow, InvalidInput, NonFiniteInput,
+}
 import lumatrix/matrix.{type Matrix}
+import lumatrix/numerics
 import lumatrix/vector.{type Vector}
 
 pub type IterativeRefinementResult {
@@ -42,7 +45,8 @@ pub fn normwise_relative_residual(
     Ok(r_norm) -> {
       case vector.norm2(b) {
         Error(e) -> Error(e)
-        Ok(b_norm) if b_norm >. 0.0 -> Ok(r_norm /. b_norm)
+        Ok(b_norm) if b_norm >. 0.0 ->
+          checked_division(r_norm, b_norm, "relative residual")
         Ok(_) -> Error(InvalidInput("relative residual needs non-zero b"))
       }
     }
@@ -59,7 +63,8 @@ pub fn normwise_relative_residual_inf(
     Ok(r) -> {
       let b_norm = vector.norm_inf(b)
       case b_norm >. 0.0 {
-        True -> Ok(vector.norm_inf(r) /. b_norm)
+        True ->
+          checked_division(vector.norm_inf(r), b_norm, "relative residual")
         False -> Error(InvalidInput("relative residual needs non-zero b"))
       }
     }
@@ -74,11 +79,19 @@ pub fn backward_error_inf(
   case residual(a, x, b) {
     Error(e) -> Error(e)
     Ok(r) -> {
-      let denominator =
-        matrix.norm_inf(a) *. vector.norm_inf(x) +. vector.norm_inf(b)
-      case denominator >. 0.0 {
-        True -> Ok(vector.norm_inf(r) /. denominator)
-        False -> Error(InvalidInput("backward error denominator is zero"))
+      case numerics.checked_multiply(matrix.norm_inf(a), vector.norm_inf(x)) {
+        Error(_) -> Error(ArithmeticOverflow("backward error denominator"))
+        Ok(matrix_term) ->
+          case numerics.checked_add(matrix_term, vector.norm_inf(b)) {
+            Error(_) -> Error(ArithmeticOverflow("backward error denominator"))
+            Ok(denominator) if denominator >. 0.0 ->
+              checked_division(
+                vector.norm_inf(r),
+                denominator,
+                "backward error",
+              )
+            Ok(_) -> Error(InvalidInput("backward error denominator is zero"))
+          }
       }
     }
   }
@@ -93,7 +106,8 @@ pub fn forward_error_inf(
     Ok(delta) -> {
       let denominator = vector.norm_inf(exact)
       case denominator >. 0.0 {
-        True -> Ok(vector.norm_inf(delta) /. denominator)
+        True ->
+          checked_division(vector.norm_inf(delta), denominator, "forward error")
         False ->
           Error(InvalidInput("forward error needs non-zero exact solution"))
       }
@@ -104,7 +118,11 @@ pub fn forward_error_inf(
 pub fn condition_number_inf(a: Matrix) -> Result(Float, NlaError) {
   case direct.inverse(a) {
     Error(e) -> Error(e)
-    Ok(inv) -> Ok(matrix.norm_inf(a) *. matrix.norm_inf(inv))
+    Ok(inv) ->
+      case numerics.checked_multiply(matrix.norm_inf(a), matrix.norm_inf(inv)) {
+        Ok(value) -> Ok(value)
+        Error(_) -> Error(ArithmeticOverflow("condition number"))
+      }
   }
 }
 
@@ -118,7 +136,11 @@ pub fn residual_forward_bound_inf(
     Ok(kappa) ->
       case normwise_relative_residual_inf(a, x, b) {
         Error(e) -> Error(e)
-        Ok(relative_residual) -> Ok(kappa *. relative_residual)
+        Ok(relative_residual) ->
+          case numerics.checked_multiply(kappa, relative_residual) {
+            Ok(value) -> Ok(value)
+            Error(_) -> Error(ArithmeticOverflow("residual forward bound"))
+          }
       }
   }
 }
@@ -133,19 +155,25 @@ pub fn iterative_refinement(
   case max_iterations < 0 {
     True -> Error(InvalidInput("max_iterations must be non-negative"))
     False ->
-      case direct.lu_factor(a) {
-        Error(e) -> Error(e)
-        Ok(factors) ->
-          refinement_loop(
-            a,
-            factors,
-            b,
-            initial,
-            0,
-            max_iterations,
-            tolerance,
-            [],
-          )
+      case numerics.is_finite(tolerance) {
+        False -> Error(NonFiniteInput("iterative refinement tolerance"))
+        True if tolerance <. 0.0 ->
+          Error(InvalidInput("tolerance must be non-negative"))
+        True ->
+          case direct.lu_factor(a) {
+            Error(e) -> Error(e)
+            Ok(factors) ->
+              refinement_loop(
+                a,
+                factors,
+                b,
+                initial,
+                0,
+                max_iterations,
+                tolerance,
+                [],
+              )
+          }
       }
   }
 }
@@ -155,19 +183,57 @@ pub fn perturbation_bound(
   relative_rhs_error: Float,
   condition_number: Float,
 ) -> Result(Float, NlaError) {
-  let denominator = 1.0 -. condition_number *. relative_matrix_error
-  case denominator >. 0.0 {
+  case
+    numerics.is_finite(relative_matrix_error)
+    && numerics.is_finite(relative_rhs_error)
+    && numerics.is_finite(condition_number)
+  {
+    False -> Error(NonFiniteInput("perturbation bound inputs"))
+    True
+      if relative_matrix_error <. 0.0
+      || relative_rhs_error <. 0.0
+      || condition_number <. 0.0
+    -> Error(InvalidInput("perturbation bound inputs must be non-negative"))
     True ->
-      Ok(
-        condition_number
-        *. { relative_matrix_error +. relative_rhs_error }
-        /. denominator,
-      )
-    False ->
-      Error(DimensionMismatch(
-        expected: "kappa * relative_matrix_error < 1",
-        actual: "ill-conditioned perturbation bound",
-      ))
+      case numerics.checked_multiply(condition_number, relative_matrix_error) {
+        Error(_) -> Error(ArithmeticOverflow("perturbation denominator"))
+        Ok(matrix_term) ->
+          case numerics.checked_subtract(1.0, matrix_term) {
+            Error(_) -> Error(ArithmeticOverflow("perturbation denominator"))
+            Ok(denominator) if denominator <=. 0.0 ->
+              Error(InvalidInput("kappa * relative_matrix_error must be < 1"))
+            Ok(denominator) ->
+              case
+                numerics.checked_add(relative_matrix_error, relative_rhs_error)
+              {
+                Error(_) -> Error(ArithmeticOverflow("perturbation numerator"))
+                Ok(total_error) ->
+                  case
+                    numerics.checked_multiply(condition_number, total_error)
+                  {
+                    Error(_) ->
+                      Error(ArithmeticOverflow("perturbation numerator"))
+                    Ok(numerator) ->
+                      checked_division(
+                        numerator,
+                        denominator,
+                        "perturbation bound",
+                      )
+                  }
+              }
+          }
+      }
+  }
+}
+
+fn checked_division(
+  numerator: Float,
+  denominator: Float,
+  operation: String,
+) -> Result(Float, NlaError) {
+  case numerics.checked_divide(numerator, denominator) {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(ArithmeticOverflow(operation))
   }
 }
 
