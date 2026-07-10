@@ -1,9 +1,10 @@
 import gleam/float
 import gleam/int
 import gleam/list
+import gleam/result
 import lumatrix/error.{
-  type NlaError, ArithmeticOverflow, DimensionMismatch, InvalidInput,
-  NonFiniteInput, NotSquare,
+  type NlaError, ArithmeticOverflow, DimensionMismatch, InternalInvariant,
+  InvalidInput, NonFiniteInput, NotSquare,
 }
 import lumatrix/error_analysis
 import lumatrix/least_squares
@@ -38,6 +39,15 @@ type ScaledSystem {
     initial: Vector,
     scale: Float,
     tolerance: Float,
+  )
+}
+
+type MinresRotationScalars {
+  MinresRotationScalars(
+    delta: Float,
+    gbar: Float,
+    next_epsln: Float,
+    next_dbar: Float,
   )
 }
 
@@ -487,7 +497,11 @@ fn bicg_step(
                     "BiCG breakdown: search directions are nearly A-orthogonal",
                   ))
                 Ok(False) -> {
-                  let alpha = rho /. denominator
+                  use alpha <- result.try(checked_scalar_divide(
+                    rho,
+                    denominator,
+                    "BiCG alpha",
+                  ))
                   case vector.axpy(alpha, p, x) {
                     Error(e) -> Error(e)
                     Ok(next_x) ->
@@ -552,7 +566,11 @@ fn bicg_finish_step(
                   ))
               }
             Ok(False) -> {
-              let beta = next_rho /. rho
+              use beta <- result.try(checked_scalar_divide(
+                next_rho,
+                rho,
+                "BiCG beta",
+              ))
               case vector.axpy(beta, p, next_r) {
                 Error(e) -> Error(e)
                 Ok(next_p) ->
@@ -680,7 +698,21 @@ fn bicgstab_step(
             True ->
               Error(InvalidInput("BiCGSTAB breakdown: omega is nearly zero"))
             False -> {
-              let beta = rho /. rho_old *. alpha /. omega
+              use rho_ratio <- result.try(checked_scalar_divide(
+                rho,
+                rho_old,
+                "BiCGSTAB beta rho ratio",
+              ))
+              use alpha_ratio <- result.try(checked_scalar_divide(
+                alpha,
+                omega,
+                "BiCGSTAB beta alpha ratio",
+              ))
+              use beta <- result.try(checked_scalar_multiply(
+                rho_ratio,
+                alpha_ratio,
+                "BiCGSTAB beta",
+              ))
               case bicgstab_search_direction(r, p, v, beta, omega) {
                 Error(e) -> Error(e)
                 Ok(next_p) ->
@@ -742,7 +774,11 @@ fn bicgstab_stabilize(
             "BiCGSTAB breakdown: alpha denominator is nearly zero",
           ))
         Ok(False) -> {
-          let next_alpha = rho /. denominator
+          use next_alpha <- result.try(checked_scalar_divide(
+            rho,
+            denominator,
+            "BiCGSTAB alpha",
+          ))
           case vector.axpy(0.0 -. next_alpha, v, r) {
             Error(e) -> Error(e)
             Ok(s) ->
@@ -817,7 +853,11 @@ fn bicgstab_after_t(
           case vector.dot(t, s) {
             Error(e) -> Error(e)
             Ok(ts) -> {
-              let omega = ts /. tt
+              use omega <- result.try(checked_scalar_divide(
+                ts,
+                tt,
+                "BiCGSTAB omega",
+              ))
               case float.absolute_value(omega) <=. 0.0 {
                 True ->
                   Error(InvalidInput("BiCGSTAB breakdown: omega is nearly zero"))
@@ -896,8 +936,13 @@ fn minres_short_loop(
             Ok(y0) ->
               case vector.dot(v, y0) {
                 Error(e) -> Error(e)
-                Ok(alpha) ->
-                  case vector.axpy(0.0 -. alpha /. beta, r_curr, y0) {
+                Ok(alpha) -> {
+                  use coefficient <- result.try(checked_scalar_divide(
+                    alpha,
+                    beta,
+                    "MINRES Lanczos coefficient",
+                  ))
+                  case vector.axpy(0.0 -. coefficient, r_curr, y0) {
                     Error(e) -> Error(e)
                     Ok(next_r) ->
                       case vector.norm2(next_r) {
@@ -926,6 +971,7 @@ fn minres_short_loop(
                           )
                       }
                   }
+                }
               }
           }
         }
@@ -945,7 +991,18 @@ fn minres_lanczos_step(
     Error(e) -> Error(e)
     Ok(av) ->
       case iteration >= 1 {
-        True -> vector.axpy(0.0 -. beta /. old_beta, r_prev, av)
+        True ->
+          case old_beta <=. 0.0 {
+            True -> Error(InternalInvariant("MINRES previous beta"))
+            False -> {
+              use coefficient <- result.try(checked_scalar_divide(
+                beta,
+                old_beta,
+                "MINRES previous-vector coefficient",
+              ))
+              vector.axpy(0.0 -. coefficient, r_prev, av)
+            }
+          }
         False -> Ok(av)
       }
   }
@@ -973,20 +1030,39 @@ fn minres_rotate_and_update(
   tolerance: Float,
 ) -> Result(GmresResult, NlaError) {
   let oldeps = epsln
-  let delta = cs *. dbar +. sn *. alpha
-  let gbar = sn *. dbar -. cs *. alpha
-  let next_epsln = sn *. next_beta
-  let next_dbar = 0.0 -. cs *. next_beta
-  case numerics.hypot(gbar, next_beta) {
+  use scalars <- result.try(minres_rotation_scalars(
+    cs,
+    sn,
+    dbar,
+    alpha,
+    next_beta,
+  ))
+  case numerics.hypot(scalars.gbar, next_beta) {
     Error(_) -> Error(ArithmeticOverflow("MINRES rotation norm"))
     Ok(gamma) if gamma <=. 0.0 ->
       finish_solver(a, b, x, iteration, tolerance, True)
     Ok(gamma) -> {
-      let next_cs = gbar /. gamma
-      let next_sn = next_beta /. gamma
-      let phi = next_cs *. phibar
-      let next_phibar = next_sn *. phibar
-      case minres_direction(v, oldeps, w_older, delta, w_old, gamma) {
+      use next_cs <- result.try(checked_scalar_divide(
+        scalars.gbar,
+        gamma,
+        "MINRES cosine",
+      ))
+      use next_sn <- result.try(checked_scalar_divide(
+        next_beta,
+        gamma,
+        "MINRES sine",
+      ))
+      use phi <- result.try(checked_scalar_multiply(
+        next_cs,
+        phibar,
+        "MINRES phi",
+      ))
+      use next_phibar <- result.try(checked_scalar_multiply(
+        next_sn,
+        phibar,
+        "MINRES residual recurrence",
+      ))
+      case minres_direction(v, oldeps, w_older, scalars.delta, w_old, gamma) {
         Error(e) -> Error(e)
         Ok(w) ->
           case vector.axpy(phi, w, x) {
@@ -1004,8 +1080,8 @@ fn minres_rotate_and_update(
                 w,
                 next_cs,
                 next_sn,
-                next_dbar,
-                next_epsln,
+                scalars.next_dbar,
+                scalars.next_epsln,
                 next_phibar,
                 iteration + 1,
                 max_iterations,
@@ -1030,7 +1106,7 @@ fn minres_direction(
     Ok(without_older) ->
       case vector.axpy(0.0 -. delta, w_old, without_older) {
         Error(e) -> Error(e)
-        Ok(direction) -> Ok(divide_vector(direction, gamma))
+        Ok(direction) -> vector.divide(direction, gamma)
       }
   }
 }
@@ -1411,12 +1487,28 @@ fn dot_breakdown(
     Ok(left_norm) ->
       case vector.norm2(right) {
         Error(e) -> Error(e)
-        Ok(right_norm) ->
-          Ok(numerics.relative_near_zero(
-            value,
-            left_norm *. right_norm,
-            breakdown_tolerance,
-          ))
+        Ok(right_norm) if left_norm <=. 0.0 || right_norm <=. 0.0 -> Ok(True)
+        Ok(right_norm) -> {
+          let normalized_pairs =
+            list.zip(vector.to_list(left), with: vector.to_list(right))
+            |> list.map(fn(pair) {
+              #(pair.0 /. left_norm, pair.1 /. right_norm)
+            })
+          case numerics.checked_dot_pairs(normalized_pairs) {
+            Error(_) ->
+              Error(ArithmeticOverflow("normalized Krylov dot product"))
+            Ok(cosine) ->
+              case float.absolute_value(cosine) <=. breakdown_tolerance {
+                True -> Ok(True)
+                False ->
+                  case value == 0.0 {
+                    True ->
+                      Error(ArithmeticOverflow("Krylov dot product underflow"))
+                    False -> Ok(False)
+                  }
+              }
+          }
+        }
       }
   }
 }
@@ -1539,12 +1631,15 @@ fn validate_symmetric(
 }
 
 fn is_symmetric(a: Matrix, tolerance: Float) -> Bool {
+  let scale = matrix.norm_inf(a)
   list.all(matrix.indices(matrix.rows(a)), satisfying: fn(i) {
     list.all(matrix.indices(matrix.cols(a)), satisfying: fn(j) {
-      float.absolute_value(
-        matrix.unsafe_get(a, i, j) -. matrix.unsafe_get(a, j, i),
+      numerics.relative_close_at_scale(
+        matrix.unsafe_get(a, i, j),
+        matrix.unsafe_get(a, j, i),
+        scale,
+        tolerance,
       )
-      <=. tolerance
     })
   })
 }
@@ -1639,10 +1734,83 @@ fn validate_positive_options(
   }
 }
 
-fn divide_vector(values: Vector, divisor: Float) -> Vector {
-  vector.from_list(
-    list.map(vector.to_list(values), fn(value) { value /. divisor }),
-  )
+fn minres_rotation_scalars(
+  cs: Float,
+  sn: Float,
+  dbar: Float,
+  alpha: Float,
+  next_beta: Float,
+) -> Result(MinresRotationScalars, NlaError) {
+  use cs_dbar <- result.try(checked_scalar_multiply(cs, dbar, "MINRES delta"))
+  use sn_alpha <- result.try(checked_scalar_multiply(sn, alpha, "MINRES delta"))
+  use delta <- result.try(checked_scalar_add(cs_dbar, sn_alpha, "MINRES delta"))
+  use sn_dbar <- result.try(checked_scalar_multiply(sn, dbar, "MINRES gbar"))
+  use cs_alpha <- result.try(checked_scalar_multiply(cs, alpha, "MINRES gbar"))
+  use gbar <- result.try(checked_scalar_subtract(
+    sn_dbar,
+    cs_alpha,
+    "MINRES gbar",
+  ))
+  use next_epsln <- result.try(checked_scalar_multiply(
+    sn,
+    next_beta,
+    "MINRES epsilon recurrence",
+  ))
+  use next_dbar <- result.try(checked_scalar_multiply(
+    0.0 -. cs,
+    next_beta,
+    "MINRES diagonal recurrence",
+  ))
+  Ok(MinresRotationScalars(
+    delta: delta,
+    gbar: gbar,
+    next_epsln: next_epsln,
+    next_dbar: next_dbar,
+  ))
+}
+
+fn checked_scalar_add(
+  left: Float,
+  right: Float,
+  operation: String,
+) -> Result(Float, NlaError) {
+  case numerics.checked_add(left, right) {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(ArithmeticOverflow(operation))
+  }
+}
+
+fn checked_scalar_subtract(
+  left: Float,
+  right: Float,
+  operation: String,
+) -> Result(Float, NlaError) {
+  case numerics.checked_subtract(left, right) {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(ArithmeticOverflow(operation))
+  }
+}
+
+fn checked_scalar_multiply(
+  left: Float,
+  right: Float,
+  operation: String,
+) -> Result(Float, NlaError) {
+  case numerics.checked_multiply(left, right) {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(ArithmeticOverflow(operation))
+  }
+}
+
+fn checked_scalar_divide(
+  numerator: Float,
+  denominator: Float,
+  operation: String,
+) -> Result(Float, NlaError) {
+  case numerics.checked_divide(numerator, denominator) {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(ArithmeticOverflow(operation))
+  }
 }
 
 fn min_int(a: Int, b: Int) -> Int {

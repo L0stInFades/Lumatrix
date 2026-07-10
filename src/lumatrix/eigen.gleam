@@ -1136,13 +1136,17 @@ fn eigen_residual(a: Matrix, x: Vector) -> Result(#(Float, Float), NlaError) {
 }
 
 fn rayleigh_quotient(x: Vector, ax: Vector) -> Result(Float, NlaError) {
-  case vector.dot(x, x) {
+  case vector.norm2(x) {
     Error(e) -> Error(e)
-    Ok(denominator) if denominator <=. 0.0 -> Error(ZeroNorm)
-    Ok(denominator) ->
-      case vector.dot(x, ax) {
+    Ok(scale) if scale <=. 0.0 -> Error(ZeroNorm)
+    Ok(scale) ->
+      case vector.divide(x, scale) {
         Error(e) -> Error(e)
-        Ok(numerator) -> Ok(numerator /. denominator)
+        Ok(normalized_x) ->
+          case vector.divide(ax, scale) {
+            Error(e) -> Error(e)
+            Ok(normalized_ax) -> vector.dot(normalized_x, normalized_ax)
+          }
       }
   }
 }
@@ -1219,11 +1223,13 @@ fn validate_symmetric(a: Matrix, tolerance: Float) -> Result(Nil, NlaError) {
 }
 
 fn is_symmetric(a: Matrix, tolerance: Float) -> Bool {
+  let scale = matrix.norm_inf(a)
   list.all(matrix.indices(matrix.rows(a)), satisfying: fn(i) {
     list.all(matrix.indices(matrix.cols(a)), satisfying: fn(j) {
-      numerics.relative_close(
+      numerics.relative_close_at_scale(
         matrix.unsafe_get(a, i, j),
         matrix.unsafe_get(a, j, i),
+        scale,
         tolerance,
       )
     })

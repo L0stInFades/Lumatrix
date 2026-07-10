@@ -28,6 +28,9 @@ based on Keep a Changelog and this project follows semantic versioning.
   the same scale contract covers GMRES, BiCG, BiCGSTAB, and MINRES.
 - Dense dot products and matrix products use scaled checked accumulation to
   prevent avoidable underflow and overflow.
+- Krylov breakdown tests use normalized dot products without multiplying vector
+  norms, scalar recurrences report structured overflow, and symmetry validation
+  is relative to the complete matrix scale.
 
 [Unreleased]: https://github.com/L0stInFades/Lumatrix/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/L0stInFades/Lumatrix/releases/tag/v1.0.0

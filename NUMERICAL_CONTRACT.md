@@ -7,6 +7,12 @@ algorithm options, and workloads whose requested outputs are representable as
 finite floats. A tolerance of zero is allowed where documented; iteration
 counts must be non-negative.
 
+Symmetry checks are relative to the infinity norm of the complete matrix, not
+to an individual off-diagonal pair. Cholesky uses a `1e-12` symmetry tolerance
+independently of its stricter pivot-singularity tolerance. This accepts
+roundoff-sized asymmetry consistently at tiny and huge global scales while
+still rejecting structurally non-symmetric inputs.
+
 `matrix.from_rows`, `matrix.from_flat`, and `matrix.from_fn` reject non-finite
 matrix entries. `vector.try_from_list` is the checked vector constructor.
 `vector.from_list` remains unchecked for compatibility, but algorithms that

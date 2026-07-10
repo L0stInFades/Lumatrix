@@ -221,6 +221,19 @@ pub fn representability_failures_return_arithmetic_overflow_test() {
     Error(error.ArithmeticOverflow(_)) -> Nil
     _ -> panic as "sparse duplicate summation overflow must be structured"
   }
+
+  let assert Ok(tiny_identity) =
+    matrix.from_rows([[5.0e-309, 0.0], [0.0, 5.0e-309]])
+  let rhs = vector.from_list([1.0, 0.0])
+  let assert Ok(initial) = vector.zeros(2)
+  case krylov.bicg(tiny_identity, rhs, initial, 2, 0.0) {
+    Error(error.ArithmeticOverflow(_)) -> Nil
+    _ -> panic as "BiCG scalar overflow must be structured"
+  }
+  case krylov.minres(tiny_identity, rhs, initial, 2, 0.0) {
+    Error(error.ArithmeticOverflow(_)) -> Nil
+    _ -> panic as "MINRES scalar overflow must be structured"
+  }
 }
 
 pub fn matrix_column_and_orientation_helpers_test() {
@@ -500,6 +513,12 @@ pub fn cholesky_accepts_large_scaled_spd_off_diagonal_test() {
 
   assert matrix.approx_equal(recovered, base, 1.0e-8)
   assert vector.approx_equal(x, vector.from_list([1.0, 1.0]), 1.0e-8)
+}
+
+pub fn symmetry_checks_are_relative_to_the_complete_matrix_scale_test() {
+  assert_scaled_symmetry_checks(1.0e-150)
+  assert_scaled_symmetry_checks(1.0)
+  assert_scaled_symmetry_checks(1.0e150)
 }
 
 pub fn tiny_scale_direct_solvers_are_not_marked_singular_test() {
@@ -1585,6 +1604,19 @@ pub fn bicg_family_uses_relative_breakdown_thresholds_test() {
   assert vector.approx_equal(bicgstab.solution, expected, 1.0e-8)
 }
 
+pub fn bicg_breakdown_check_avoids_norm_product_overflow_test() {
+  let assert Ok(a) = matrix.identity(2)
+  let assert Ok(b) = vector.zeros(2)
+  let initial = vector.from_list([0.0 -. 1.0e150, 0.0 -. 1.0e150])
+  let shadow = vector.from_list([1.0e150, 0.0 -. 9.999999999e149])
+
+  let assert Ok(result) =
+    krylov.bicg_with_shadow(a, b, initial, shadow, 2, 1.0e-12)
+
+  assert result.converged
+  assert vector.approx_equal(result.solution, b, 1.0e-12)
+}
+
 pub fn bicgstab_accepts_huge_scaled_stabilization_steps_test() {
   let scale = 1.0e20
   let assert Ok(a) =
@@ -1856,6 +1888,20 @@ fn assert_iterative_scale(scale: Float, scaled_tolerance: Float) -> Nil {
   assert cg.residual_norm <=. scaled_tolerance
   assert gmres.residual_norm <=. scaled_tolerance
   assert minres.residual_norm <=. scaled_tolerance
+}
+
+fn assert_scaled_symmetry_checks(scale: Float) -> Nil {
+  let assert Ok(a) =
+    matrix.from_rows([
+      [4.0 *. scale, 1.0000000000005 *. scale],
+      [1.0 *. scale, 3.0 *. scale],
+    ])
+  let initial = vector.from_list([1.0, 0.0])
+
+  let assert Ok(_) = direct.cholesky_factor(a)
+  let assert Ok(_) = eigen.symmetric_tridiagonal_reduction(a)
+  let assert Ok(_) = krylov.lanczos(a, initial, 1, 1.0e-12)
+  Nil
 }
 
 fn assert_invalid_iteration(

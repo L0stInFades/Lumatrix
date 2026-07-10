@@ -11,6 +11,8 @@ import lumatrix/vector.{type Vector}
 
 const pivot_tolerance = 1.0e-14
 
+const symmetry_tolerance = 1.0e-12
+
 pub type LU {
   LU(l: Matrix, u: Matrix, p: Matrix, swaps: Int)
 }
@@ -108,7 +110,7 @@ pub fn cholesky_factor(matrix a: Matrix) -> Result(Cholesky, NlaError) {
       case matrix.is_finite(a) {
         False -> Error(NonFiniteInput("Cholesky matrix"))
         True ->
-          case is_symmetric(a, pivot_tolerance) {
+          case is_symmetric(a, symmetry_tolerance) {
             False -> Error(InvalidInput("matrix must be symmetric"))
             True -> {
               let assert Ok(l) =
@@ -600,11 +602,13 @@ fn swap_columns(a: Matrix, left: Int, right: Int) -> Matrix {
 }
 
 fn is_symmetric(a: Matrix, tolerance: Float) -> Bool {
+  let scale = matrix.norm_inf(a)
   list.all(matrix.indices(matrix.rows(a)), satisfying: fn(i) {
     list.all(matrix.indices(i), satisfying: fn(j) {
-      numerics.relative_close(
+      numerics.relative_close_at_scale(
         matrix.unsafe_get(a, i, j),
         matrix.unsafe_get(a, j, i),
+        scale,
         tolerance,
       )
     })

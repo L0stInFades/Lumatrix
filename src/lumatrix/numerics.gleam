@@ -238,6 +238,34 @@ pub fn relative_close(a: Float, b: Float, tolerance: Float) -> Bool {
   }
 }
 
+/// Compare two values relative to a caller-supplied global scale.
+///
+/// Dividing before subtracting avoids overflow when finite values have
+/// opposite signs. Callers such as matrix symmetry checks should supply a
+/// norm that is at least as large as either entry.
+pub fn relative_close_at_scale(
+  a: Float,
+  b: Float,
+  scale: Float,
+  tolerance: Float,
+) -> Bool {
+  case
+    !is_finite(a)
+    || !is_finite(b)
+    || !is_finite(scale)
+    || !is_finite(tolerance)
+    || scale <. 0.0
+    || tolerance <. 0.0
+  {
+    True -> False
+    False ->
+      case scale <=. 0.0 {
+        True -> a == b
+        False -> float.absolute_value(a /. scale -. b /. scale) <=. tolerance
+      }
+  }
+}
+
 pub fn absolute_close(a: Float, b: Float, tolerance: Float) -> Bool {
   case tolerance <. 0.0 {
     True -> False
