@@ -16,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "src" / "nla_weird_matrix_tests" / "generated_cases.gleam"
 
 
-def gleam_float(value: float) -> str:
-    text = format(float(value), ".15g")
+def gleam_float(value: float, significant_digits: int = 15) -> str:
+    text = format(float(value), f".{significant_digits}g")
     text = text.replace("e+", "e")
     if "e" in text:
         mantissa, exponent = text.split("e")
@@ -47,6 +47,25 @@ def vector_case(name: str, data: np.ndarray) -> str:
 
 def gleam_vector(data: np.ndarray) -> str:
     return "[" + ", ".join(gleam_float(x) for x in data.tolist()) + "]"
+
+
+# LAPACK implementations may legitimately disagree in the last few bits. Keeping
+# eleven significant decimal digits makes generated oracle files reproducible
+# across Accelerate and OpenBLAS while remaining much tighter than the test
+# tolerances.
+def gleam_oracle_float(value: float) -> str:
+    return gleam_float(value, significant_digits=11)
+
+
+def gleam_oracle_vector(data: np.ndarray) -> str:
+    return "[" + ", ".join(gleam_oracle_float(x) for x in data.tolist()) + "]"
+
+
+def gleam_oracle_rows(rows: np.ndarray) -> str:
+    row_text = []
+    for row in rows.tolist():
+        row_text.append("[" + ", ".join(gleam_oracle_float(x) for x in row) + "]")
+    return "[" + ", ".join(row_text) + "]"
 
 
 def hilbert(n: int) -> np.ndarray:
@@ -247,7 +266,7 @@ def render_cases() -> str:
         solution = np.linalg.solve(rows, rhs)
         lines.append(
             f'  SolveCase(name: "{name}", rows: {gleam_rows(rows)}, '
-            f"rhs: {gleam_vector(rhs)}, solution: {gleam_vector(solution)}),"
+            f"rhs: {gleam_vector(rhs)}, solution: {gleam_oracle_vector(solution)}),"
         )
     lines.append("  ]")
     lines.append("}")
@@ -272,8 +291,8 @@ def render_cases() -> str:
         residual_norm = np.linalg.norm(rows @ solution - rhs)
         lines.append(
             f'  LeastSquaresCase(name: "{name}", rows: {gleam_rows(rows)}, '
-            f"rhs: {gleam_vector(rhs)}, solution: {gleam_vector(solution)}, "
-            f"residual_norm: {gleam_float(residual_norm)}),"
+            f"rhs: {gleam_vector(rhs)}, solution: {gleam_oracle_vector(solution)}, "
+            f"residual_norm: {gleam_oracle_float(residual_norm)}),"
         )
     lines.append("  ]")
     lines.append("}")
@@ -290,7 +309,7 @@ def render_cases() -> str:
         singular_values = np.linalg.svd(rows, compute_uv=False)
         lines.append(
             f'  SvdCase(name: "{name}", rows: {gleam_rows(rows)}, '
-            f"singular_values: {gleam_vector(singular_values)}),"
+            f"singular_values: {gleam_oracle_vector(singular_values)}),"
         )
     lines.append("  ]")
     lines.append("}")
@@ -307,7 +326,7 @@ def render_cases() -> str:
         eigenvalues = np.linalg.eigvalsh(rows)
         lines.append(
             f'  SymmetricEigenCase(name: "{name}", rows: {gleam_rows(rows)}, '
-            f"eigenvalues: {gleam_vector(eigenvalues)}),"
+            f"eigenvalues: {gleam_oracle_vector(eigenvalues)}),"
         )
     lines.append("  ]")
     lines.append("}")
@@ -324,7 +343,7 @@ def render_cases() -> str:
         lower = np.linalg.cholesky(rows)
         lines.append(
             f'  CholeskyCase(name: "{name}", rows: {gleam_rows(rows)}, '
-            f"lower: {gleam_rows(lower)}),"
+            f"lower: {gleam_oracle_rows(lower)}),"
         )
     lines.append("  ]")
     lines.append("}")
